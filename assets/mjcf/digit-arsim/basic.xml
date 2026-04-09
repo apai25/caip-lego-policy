@@ -1,0 +1,14 @@
+<mujoco model='basic'>
+<include file='simulation/basic.xml' />
+
+<!-- FEEL FREE TO SWITCH BETWEEN THE TWO BELOW,
+ADVANCED JUST HAS ADDITIONAL MESHES FOR VISUALIZING, IT DOESN"T AFFECT THE ROBOT PHYSICS -->
+
+<!-- <include file='imports/basic.xml' />
+<include file='robot/basic.xml' /> -->
+
+<include file='imports/advanced.xml' />
+<include file='robot/advanced.xml' />
+
+<include file='terrain/basic.xml' />
+</mujoco>

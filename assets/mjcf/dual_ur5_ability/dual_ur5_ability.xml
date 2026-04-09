@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <compiler angle="radian" coordinate="local" meshdir="stls" texturedir="textures"></compiler>
+
+    <include file="shared.xml"></include>
+
+    <asset>
+        <include file="shared_asset.xml"></include>
+    </asset>
+
+    <worldbody>
+        <include file="robot.xml"></include>
+    </worldbody>
+</mujoco>

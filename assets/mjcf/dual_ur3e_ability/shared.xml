@@ -1,0 +1,93 @@
+<mujoco>
+    <size njmax="500" nconmax="100" nuser_jnt="1" nuser_site="1" nuser_tendon="1" nuser_sensor="1" nuser_actuator="16" nstack="600000"></size>
+    
+    <default>
+        <default class="visual">
+            <geom group="2" type="mesh" contype="0" conaffinity="0"></geom>
+        </default>
+        <default class="collision">
+            <geom group="3" type="mesh"></geom>
+        </default>
+    </default>
+
+    <tendon>
+    <!-- bestfit coefficients:  [1.05851325 0.72349796] -->
+    <!-- linfit_q2 = (q1 * c[0] + c[1]) -->
+        
+        <!-- Left AbilityHand -->
+        <fixed name="ability_left:T_index" limited="true" range="0.723 0.724">
+            <joint joint="ability_left:index_q1" coef="-1.05851325"/>
+            <joint joint="ability_left:index_q2" coef="1.0"/>
+        </fixed>
+        <fixed name="ability_left:T_middle" limited="true" range="0.723 0.724">
+            <joint joint="ability_left:middle_q1" coef="-1.05851325"/>
+            <joint joint="ability_left:middle_q2" coef="1.0"/>
+        </fixed>
+        <fixed name="ability_left:T_ring" limited="true" range="0.723 0.724">
+            <joint joint="ability_left:ring_q1" coef="-1.05851325"/>
+            <joint joint="ability_left:ring_q2" coef="1.0"/>
+        </fixed>
+        <fixed name="ability_left:T_pinky" limited="true" range="0.723 0.724">
+            <joint joint="ability_left:pinky_q1" coef="-1.05851325"/>
+            <joint joint="ability_left:pinky_q2" coef="1.0"/>
+        </fixed>
+
+        <!-- Right AbilityHand -->
+        <fixed name="ability_right:T_index" limited="true" range="0.723 0.724">
+            <joint joint="ability_right:index_q1" coef="-1.05851325"/>
+            <joint joint="ability_right:index_q2" coef="1.0"/>
+        </fixed>
+        <fixed name="ability_right:T_middle" limited="true" range="0.723 0.724">
+            <joint joint="ability_right:middle_q1" coef="-1.05851325"/>
+            <joint joint="ability_right:middle_q2" coef="1.0"/>
+        </fixed>
+        <fixed name="ability_right:T_ring" limited="true" range="0.723 0.724">
+            <joint joint="ability_right:ring_q1" coef="-1.05851325"/>
+            <joint joint="ability_right:ring_q2" coef="1.0"/>
+        </fixed>
+        <fixed name="ability_right:T_pinky" limited="true" range="0.723 0.724">
+            <joint joint="ability_right:pinky_q1" coef="-1.05851325"/>
+            <joint joint="ability_right:pinky_q2" coef="1.0"/>
+        </fixed>
+    </tendon>
+
+    <actuator>
+        <!-- kp from shadowhand XFJ2, for thumb THJ1 and THJ1 -->
+
+        <!-- https://github.com/psyonicinc/ability-hand-api/blob/master/URDF/ability_hand_right.urdf -->
+        <!-- abilityhand max torques (Nm) = 0.2 -->
+        <!-- Left AbilityHand -->
+        <motor name="ability_left:index_q1" joint="ability_left:index_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_left:middle_q1" joint="ability_left:middle_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_left:ring_q1" joint="ability_left:ring_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_left:pinky_q1" joint="ability_left:pinky_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_left:thumb_q1" joint="ability_left:thumb_q1" gear="1" ctrllimited="true" ctrlrange="-2.0944 0.0" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_left:thumb_q2" joint="ability_left:thumb_q2" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        
+        <!-- Right AbilityHand -->
+        <motor name="ability_right:index_q1" joint="ability_right:index_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_right:middle_q1" joint="ability_right:middle_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_right:ring_q1" joint="ability_right:ring_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_right:pinky_q1" joint="ability_right:pinky_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_right:thumb_q1" joint="ability_right:thumb_q1" gear="1" ctrllimited="true" ctrlrange="-2.0944 0.0" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_right:thumb_q2" joint="ability_right:thumb_q2" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+
+        <!-- https://github.com/ros-industrial/universal_robot/blob/6507bb6756d0065d49b76230ff55f875f099a827/ur_description/config/ur3e/joint_limits.yaml -->
+        <!-- UR3e max torques (Nm) = [56.0, 56.0, 28.0, 12.0, 12.0, 12.0]  -->
+        <!-- Left UR3e -->
+        <position name="ur_left:shoulder_pan_joint" joint="ur_left:shoulder_pan_joint" ctrlrange="-3.1415 3.1415" kp="3500" forcerange="-56 56"></position>
+        <position name="ur_left:shoulder_lift_joint" joint="ur_left:shoulder_lift_joint" ctrlrange="-3.1415 3.1415" kp="3500" forcerange="-56 56"></position>
+        <position name="ur_left:elbow_joint" joint="ur_left:elbow_joint" ctrlrange="-3.1415 3.1415" kp="3500" forcerange="-28 28"></position>
+        <position name="ur_left:wrist_1_joint" joint="ur_left:wrist_1_joint" ctrlrange="-3.1415 3.1415" kp="3000" forcerange="-12 12"></position>
+        <position name="ur_left:wrist_2_joint" joint="ur_left:wrist_2_joint" ctrlrange="-3.1415 3.1415" kp="3000" forcerange="-12 12"></position>
+        <position name="ur_left:wrist_3_joint" joint="ur_left:wrist_3_joint" ctrlrange="-3.1415 3.1415" kp="3000" forcerange="-12 12"></position>
+        
+        <!-- Right UR3e -->
+        <position name="ur_right:shoulder_pan_joint" joint="ur_right:shoulder_pan_joint" ctrlrange="-3.1415 3.1415" kp="3500" forcerange="-56 56"></position>
+        <position name="ur_right:shoulder_lift_joint" joint="ur_right:shoulder_lift_joint" ctrlrange="-3.1415 3.1415" kp="3500" forcerange="-56 56"></position>
+        <position name="ur_right:elbow_joint" joint="ur_right:elbow_joint" ctrlrange="-3.1415 3.1415" kp="3500" forcerange="-28 28"></position>
+        <position name="ur_right:wrist_1_joint" joint="ur_right:wrist_1_joint" ctrlrange="-3.1415 3.1415" kp="3000" forcerange="-12 12"></position>
+        <position name="ur_right:wrist_2_joint" joint="ur_right:wrist_2_joint" ctrlrange="-3.1415 3.1415" kp="3000" forcerange="-12 12"></position>
+        <position name="ur_right:wrist_3_joint" joint="ur_right:wrist_3_joint" ctrlrange="-3.1415 3.1415" kp="3000" forcerange="-12 12"></position>
+    </actuator>
+</mujoco>

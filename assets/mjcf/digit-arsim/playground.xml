@@ -1,0 +1,5 @@
+<mujoco model='playground'>
+<include file='simulation/template.xml' />
+<include file='terrain/walled-hfield.xml' />
+<include file='robot/$(asset.geom).xml' type="robot" />
+</mujoco>

@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<robot name="stand">
+  <link name="stand">
+    <visual>
+      <origin rpy="0 3.1415 1.5708" xyz="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="stand.obj" scale="0.1 0.1 0.1" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 3.1415 1.5708" xyz="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="stand.obj" scale="0.1 0.1 0.1" />
+      </geometry>
+    </collision>
+  </link>
+</robot>

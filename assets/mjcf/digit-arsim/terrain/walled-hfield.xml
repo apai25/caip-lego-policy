@@ -1,0 +1,17 @@
+<mujoco model='playground'>
+  <asset>
+    <material name='plane' reflectance='0.000000' texrepeat='1 1' texture='plane' texuniform='true'/>
+    <texture name='skybox' type='skybox' builtin='gradient' rgb1='.4 .6 .8' rgb2='0 0 0' width='2048' height='2048' mark='random' markrgb='1 1 1'/>
+    <texture name='plane' type='2d' builtin='checker' rgb1='.2 .3 .4' rgb2='.1 0.15 0.2' width='512' height='512' mark='cross' markrgb='.8 .8 .8'/>
+    <hfield name='terrain-hfield' nrow='$(terrain.nrow)' ncol='$(terrain.nrow)' size='$(terrain.width) $(terrain.width) $(terrain.max_depth) 0.1' />
+  </asset>
+  <worldbody>
+    <light directional='true' diffuse='.4 .4 .4' specular='0.1 0.1 0.1' pos='0 0 5.0' dir='0 0 -1' castshadow='false'/>
+    <light directional='true' diffuse='.6 .6 .6' specular='0.2 0.2 0.2' pos='0 0 4' dir='0 0 -1'/>
+    <geom name="terrain" material='plane' type="hfield" hfield="terrain-hfield" conaffinity='127' condim='3' friction='0.7 0.01 0.005' pos='0 0 0' priority='100'/>
+    <geom name='border_0' type='plane' material='plane' size='0 0 1' pos='0 -$(terrain.width) 0' zaxis='0 1 0' conaffinity='127' condim='3' friction='0.7 0.01 0.005' priority='100'/>
+    <geom name='border_1' type='plane' material='plane' size='0 0 1' pos='0 $(terrain.width) 0' zaxis='0 -1 0' conaffinity='127' condim='3' friction='0.7 0.01 0.005' priority='100'/>
+    <geom name='border_2' type='plane' material='plane' size='0 0 1' pos='-$(terrain.width) 0 0' zaxis='1 0 0' conaffinity='127' condim='3' friction='0.7 0.01 0.005' priority='100'/>
+    <geom name='border_3' type='plane' material='plane' size='0 0 1' pos='$(terrain.width) 0 0' zaxis='-1 0 0' conaffinity='127' condim='3' friction='0.7 0.01 0.005' priority='100'/>
+  </worldbody>
+</mujoco>

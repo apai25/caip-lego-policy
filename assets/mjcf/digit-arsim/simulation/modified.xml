@@ -1,0 +1,11 @@
+<mujoco model='playground'>
+  <compiler angle='degree' eulerseq='xyz' meshdir='stl' balanceinertia='true' />
+  <option iterations='50' solver='Newton' timestep='0.0005' gravity='0 0 -9.806' cone='elliptic' impratio='1' integrator='implicitfast' />
+  <size nconmax='-1' nuserdata='1000' nuser_actuator='1' />
+  <default>
+    <default class='collision'>
+      <geom conaffinity='1' condim='3' contype='1' />
+    </default>
+    <geom conaffinity='0' condim='1' contype='0'  solref='0.001 1.1' />
+  </default>
+</mujoco>

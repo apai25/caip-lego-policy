@@ -1,0 +1,335 @@
+[
+  {
+    "name": "base",
+    "qposadr": 0,
+    "dofadr": 0,
+    "jnt": 0,
+    "type": 0,
+    "nqpos": 7,
+    "nqvel": 6
+  },
+  {
+    "name": "left-hip-roll",
+    "qposadr": 7,
+    "dofadr": 6,
+    "jnt": 1,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-hip-yaw",
+    "qposadr": 8,
+    "dofadr": 7,
+    "jnt": 2,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-hip-pitch",
+    "qposadr": 9,
+    "dofadr": 8,
+    "jnt": 3,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-achilles-rod",
+    "qposadr": 10,
+    "dofadr": 9,
+    "jnt": 4,
+    "type": 1,
+    "nqpos": 4,
+    "nqvel": 3
+  },
+  {
+    "name": "left-knee",
+    "qposadr": 14,
+    "dofadr": 12,
+    "jnt": 5,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-shin",
+    "qposadr": 15,
+    "dofadr": 13,
+    "jnt": 6,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-tarsus",
+    "qposadr": 16,
+    "dofadr": 14,
+    "jnt": 7,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-heel-spring",
+    "qposadr": 17,
+    "dofadr": 15,
+    "jnt": 8,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-toe-A",
+    "qposadr": 18,
+    "dofadr": 16,
+    "jnt": 9,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-toe-A-rod",
+    "qposadr": 19,
+    "dofadr": 17,
+    "jnt": 10,
+    "type": 1,
+    "nqpos": 4,
+    "nqvel": 3
+  },
+  {
+    "name": "left-toe-B",
+    "qposadr": 23,
+    "dofadr": 20,
+    "jnt": 11,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-toe-B-rod",
+    "qposadr": 24,
+    "dofadr": 21,
+    "jnt": 12,
+    "type": 1,
+    "nqpos": 4,
+    "nqvel": 3
+  },
+  {
+    "name": "left-toe-pitch",
+    "qposadr": 28,
+    "dofadr": 24,
+    "jnt": 13,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-toe-roll",
+    "qposadr": 29,
+    "dofadr": 25,
+    "jnt": 14,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-shoulder-roll",
+    "qposadr": 30,
+    "dofadr": 26,
+    "jnt": 15,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-shoulder-pitch",
+    "qposadr": 31,
+    "dofadr": 27,
+    "jnt": 16,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-shoulder-yaw",
+    "qposadr": 32,
+    "dofadr": 28,
+    "jnt": 17,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "left-elbow",
+    "qposadr": 33,
+    "dofadr": 29,
+    "jnt": 18,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-hip-roll",
+    "qposadr": 34,
+    "dofadr": 30,
+    "jnt": 19,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-hip-yaw",
+    "qposadr": 35,
+    "dofadr": 31,
+    "jnt": 20,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-hip-pitch",
+    "qposadr": 36,
+    "dofadr": 32,
+    "jnt": 21,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-achilles-rod",
+    "qposadr": 37,
+    "dofadr": 33,
+    "jnt": 22,
+    "type": 1,
+    "nqpos": 4,
+    "nqvel": 3
+  },
+  {
+    "name": "right-knee",
+    "qposadr": 41,
+    "dofadr": 36,
+    "jnt": 23,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-shin",
+    "qposadr": 42,
+    "dofadr": 37,
+    "jnt": 24,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-tarsus",
+    "qposadr": 43,
+    "dofadr": 38,
+    "jnt": 25,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-heel-spring",
+    "qposadr": 44,
+    "dofadr": 39,
+    "jnt": 26,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-toe-A",
+    "qposadr": 45,
+    "dofadr": 40,
+    "jnt": 27,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-toe-A-rod",
+    "qposadr": 46,
+    "dofadr": 41,
+    "jnt": 28,
+    "type": 1,
+    "nqpos": 4,
+    "nqvel": 3
+  },
+  {
+    "name": "right-toe-B",
+    "qposadr": 50,
+    "dofadr": 44,
+    "jnt": 29,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-toe-B-rod",
+    "qposadr": 51,
+    "dofadr": 45,
+    "jnt": 30,
+    "type": 1,
+    "nqpos": 4,
+    "nqvel": 3
+  },
+  {
+    "name": "right-toe-pitch",
+    "qposadr": 55,
+    "dofadr": 48,
+    "jnt": 31,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-toe-roll",
+    "qposadr": 56,
+    "dofadr": 49,
+    "jnt": 32,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-shoulder-roll",
+    "qposadr": 57,
+    "dofadr": 50,
+    "jnt": 33,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-shoulder-pitch",
+    "qposadr": 58,
+    "dofadr": 51,
+    "jnt": 34,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-shoulder-yaw",
+    "qposadr": 59,
+    "dofadr": 52,
+    "jnt": 35,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  },
+  {
+    "name": "right-elbow",
+    "qposadr": 60,
+    "dofadr": 53,
+    "jnt": 36,
+    "type": 3,
+    "nqpos": 1,
+    "nqvel": 1
+  }
+]

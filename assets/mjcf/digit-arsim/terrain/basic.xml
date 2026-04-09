@@ -1,0 +1,13 @@
+<mujoco model='playground'>
+  <asset>
+    <material name='plane' reflectance='0.000000' texrepeat='1 1' texture='plane' texuniform='true'/>
+		<texture name="skybox" type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="0.6 0.6 0.6" width="800" height="800" />
+		<!-- <texture name="plane" type="2d" builtin="gradient" rgb1="0.4 0.4 0.4" rgb2="0.55 0.55 0.55" width="300" height="300" /> -->
+    <texture name="plane" type="2d" builtin="checker" rgb1="0.4 0.4 0.4" rgb2="0.4 0.4 0.4" width="300" height="300" mark="edge" markrgb="0.2 0.2 0.2"/>
+  </asset>
+  <worldbody>
+    <light directional='true' diffuse='.4 .4 .4' specular='0.1 0.1 0.1' pos='0 0 5.0' dir='0 0 -1' castshadow='false'/>
+    <light directional='true' diffuse='.6 .6 .6' specular='0.2 0.2 0.2' pos='0 0 4' dir='0 0 -1'/>
+    <geom size='10 10 1' name='floor' material='plane' type='plane' conaffinity='127' condim='3' friction='0.7 0.01 0.005' pos='0 0 0' priority='100'/>
+  </worldbody>
+</mujoco>

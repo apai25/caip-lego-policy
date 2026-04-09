@@ -1,0 +1,113 @@
+<!-- See LICENSE.md for legal notices. LICENSE.md must be kept together with this file. -->
+<mujoco>
+    <size njmax="500" nconmax="100" nuser_jnt="1" nuser_site="1" nuser_tendon="1" nuser_sensor="1" nuser_actuator="16" nstack="600000"></size>
+
+    <default>
+        <default class="ur:collision">
+            <geom contype="1" conaffinity="0" group="4" type="mesh"></geom>
+        </default>
+        <default class="ur:visual">
+            <geom contype="0" conaffinity="0" group="1" type="mesh"></geom>
+        </default>
+    </default>
+
+    <sensor>
+        <!-- Left UR5 -->
+        <jointpos name="ur5_left:Sjp_joint0" joint="ur5_left:joint0"></jointpos>
+        <jointpos name="ur5_left:Sjp_joint1" joint="ur5_left:joint1"></jointpos>
+        <jointpos name="ur5_left:Sjp_joint2" joint="ur5_left:joint2"></jointpos>
+        <jointpos name="ur5_left:Sjp_joint3" joint="ur5_left:joint3"></jointpos>
+        <jointpos name="ur5_left:Sjp_joint4" joint="ur5_left:joint4"></jointpos>
+        <jointpos name="ur5_left:Sjp_joint5" joint="ur5_left:joint5"></jointpos>
+
+        <!-- Right UR5 -->
+        <jointpos name="ur5_right:Sjp_joint0" joint="ur5_right:joint0"></jointpos>
+        <jointpos name="ur5_right:Sjp_joint1" joint="ur5_right:joint1"></jointpos>
+        <jointpos name="ur5_right:Sjp_joint2" joint="ur5_right:joint2"></jointpos>
+        <jointpos name="ur5_right:Sjp_joint3" joint="ur5_right:joint3"></jointpos>
+        <jointpos name="ur5_right:Sjp_joint4" joint="ur5_right:joint4"></jointpos>
+        <jointpos name="ur5_right:Sjp_joint5" joint="ur5_right:joint5"></jointpos>
+    </sensor>
+
+    <tendon>
+    <!-- bestfit coefficients:  [1.05851325 0.72349796] -->
+    <!-- linfit_q2 = (q1 * c[0] + c[1]) -->
+        
+        <!-- Left AbilityHand -->
+        <fixed name="ability_left:T_index" limited="true" range="0.723 0.724">
+            <joint joint="ability_left:index_q1" coef="-1.05851325"/>
+            <joint joint="ability_left:index_q2" coef="1.0"/>
+        </fixed>
+        <fixed name="ability_left:T_middle" limited="true" range="0.723 0.724">
+            <joint joint="ability_left:middle_q1" coef="-1.05851325"/>
+            <joint joint="ability_left:middle_q2" coef="1.0"/>
+        </fixed>
+        <fixed name="ability_left:T_ring" limited="true" range="0.723 0.724">
+            <joint joint="ability_left:ring_q1" coef="-1.05851325"/>
+            <joint joint="ability_left:ring_q2" coef="1.0"/>
+        </fixed>
+        <fixed name="ability_left:T_pinky" limited="true" range="0.723 0.724">
+            <joint joint="ability_left:pinky_q1" coef="-1.05851325"/>
+            <joint joint="ability_left:pinky_q2" coef="1.0"/>
+        </fixed>
+
+        <!-- Right AbilityHand -->
+        <fixed name="ability_right:T_index" limited="true" range="0.723 0.724">
+            <joint joint="ability_right:index_q1" coef="-1.05851325"/>
+            <joint joint="ability_right:index_q2" coef="1.0"/>
+        </fixed>
+        <fixed name="ability_right:T_middle" limited="true" range="0.723 0.724">
+            <joint joint="ability_right:middle_q1" coef="-1.05851325"/>
+            <joint joint="ability_right:middle_q2" coef="1.0"/>
+        </fixed>
+        <fixed name="ability_right:T_ring" limited="true" range="0.723 0.724">
+            <joint joint="ability_right:ring_q1" coef="-1.05851325"/>
+            <joint joint="ability_right:ring_q2" coef="1.0"/>
+        </fixed>
+        <fixed name="ability_right:T_pinky" limited="true" range="0.723 0.724">
+            <joint joint="ability_right:pinky_q1" coef="-1.05851325"/>
+            <joint joint="ability_right:pinky_q2" coef="1.0"/>
+        </fixed>
+    </tendon>
+
+    <actuator>
+        <!-- kp from shadowhand XFJ2, for thumb THJ1 and THJ1 -->
+
+        <!-- https://github.com/psyonicinc/ability-hand-api/blob/master/URDF/ability_hand_right.urdf -->
+        <!-- abilityhand max torques (Nm) = 0.2 -->
+        <!-- Left AbilityHand -->
+        <motor name="ability_left:index_q1" joint="ability_left:index_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_left:middle_q1" joint="ability_left:middle_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_left:ring_q1" joint="ability_left:ring_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_left:pinky_q1" joint="ability_left:pinky_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_left:thumb_q1" joint="ability_left:thumb_q1" gear="1" ctrllimited="true" ctrlrange="-2.0944 0.0" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_left:thumb_q2" joint="ability_left:thumb_q2" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        
+        <!-- Right AbilityHand -->
+        <motor name="ability_right:index_q1" joint="ability_right:index_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_right:middle_q1" joint="ability_right:middle_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_right:ring_q1" joint="ability_right:ring_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_right:pinky_q1" joint="ability_right:pinky_q1" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_right:thumb_q1" joint="ability_right:thumb_q1" gear="1" ctrllimited="true" ctrlrange="-2.0944 0.0" kp="1" forcerange="-0.2 0.2"/>
+        <motor name="ability_right:thumb_q2" joint="ability_right:thumb_q2" gear="1" ctrllimited="true" ctrlrange="0.0 2.0944" kp="1" forcerange="-0.2 0.2"/>
+
+        <!-- https://github.com/ros-industrial/universal_robot/issues/32#issuecomment-30802605 -->
+        <!-- https://github.com/UniversalRobots/Universal_Robots_ROS2_Description/blob/ros2/config/ur5e/joint_limits.yaml -->
+        <!-- ur5 max torques (Nm) = [150, 150, 150, 28, 28, 28] -->
+        <!-- Left UR5 -->
+        <position name="ur5_left:A_joint0" joint="ur5_left:joint0" ctrlrange="-3.1415 3.1415" kp="3500" forcerange="-150 150"></position>
+        <position name="ur5_left:A_joint1" joint="ur5_left:joint1" ctrlrange="-3.1415 3.1415" kp="3500" forcerange="-150 150"></position>
+        <position name="ur5_left:A_joint2" joint="ur5_left:joint2" ctrlrange="-3.1415 3.1415" kp="3500" forcerange="-150 150"></position>
+        <position name="ur5_left:A_joint3" joint="ur5_left:joint3" ctrlrange="-3.1415 3.1415" kp="3000" forcerange="-28 28"></position>
+        <position name="ur5_left:A_joint4" joint="ur5_left:joint4" ctrlrange="-3.1415 3.1415" kp="3000" forcerange="-28 28"></position>
+        <position name="ur5_left:A_joint5" joint="ur5_left:joint5" ctrlrange="-3.1415 3.1415" kp="3000" forcerange="-28 28"></position>
+        
+        <!-- Right UR5 -->
+        <position name="ur5_right:A_joint0" joint="ur5_right:joint0" ctrlrange="-3.1415 3.1415" kp="3500" forcerange="-150 150"></position>
+        <position name="ur5_right:A_joint1" joint="ur5_right:joint1" ctrlrange="-3.1415 3.1415" kp="3500" forcerange="-150 150"></position>
+        <position name="ur5_right:A_joint2" joint="ur5_right:joint2" ctrlrange="-3.1415 3.1415" kp="3500" forcerange="-150 150"></position>
+        <position name="ur5_right:A_joint3" joint="ur5_right:joint3" ctrlrange="-3.1415 3.1415" kp="3000" forcerange="-28 28"></position>
+        <position name="ur5_right:A_joint4" joint="ur5_right:joint4" ctrlrange="-3.1415 3.1415" kp="3000" forcerange="-28 28"></position>
+        <position name="ur5_right:A_joint5" joint="ur5_right:joint5" ctrlrange="-3.1415 3.1415" kp="3000" forcerange="-28 28"></position>
+    </actuator>
+</mujoco>

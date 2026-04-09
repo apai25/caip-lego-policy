@@ -1,0 +1,5 @@
+<mujoco>
+<asset>
+<material name='collision' rgba='0.1 0.5 0.9 0.4'/>
+</asset>
+</mujoco>

@@ -1,0 +1,58 @@
+<!-- See LICENSE.md for legal notices. LICENSE.md must be kept together with this file. -->
+<mujoco>
+    <material name="silver" specular="1" shininess="0.5" reflectance="1" emission="0.25" rgba="0.82 0.82 0.82 1"/>
+    <material name="grey" specular="1" shininess="0.5" reflectance="1" emission="0.1" rgba="0.5 0.5 0.5 1"/>
+    <material name="blue" specular="1" shininess="0.5" reflectance="1" emission="0" rgba="0.678 0.847 0.902 1"/>
+    <material name="black" specular="1" shininess="0.5" reflectance="1" emission="0" rgba="0.2 0.2 0.2 1"/>
+
+    <!-- UR5 -->
+    <mesh name="link0" file="ur5/link0.stl"></mesh>
+    <mesh name="link1" file="ur5/link1.stl"></mesh>
+    <mesh name="link1_cap" file="ur5/link1_cap.stl"></mesh>
+    <mesh name="link1_connector" file="ur5/link1_connector.stl"></mesh>
+    <mesh name="link2" file="ur5/link2.stl"></mesh>
+    <mesh name="link2_tube" file="ur5/link2_tube.stl"></mesh>
+    <mesh name="link2_cap" file="ur5/link2_cap.stl"></mesh>
+    <mesh name="link2_connector" file="ur5/link2_connector.stl"></mesh>
+    <mesh name="link3a" file="ur5/link3a.stl"></mesh>
+    <mesh name="link3a_connector" file="ur5/link3a_connector.stl"></mesh>
+    <mesh name="link3_tube" file="ur5/link3_tube.stl"></mesh>
+    <mesh name="link3_cap" file="ur5/link3_cap.stl"></mesh>
+    <mesh name="link3b" file="ur5/link3b.stl"></mesh>
+    <mesh name="link3b_connector" file="ur5/link3b_connector.stl"></mesh>
+    <mesh name="link3b_connector2" file="ur5/link3b_connector2.stl"></mesh>
+    <mesh name="link4" file="ur5/link4.stl"></mesh>
+    <mesh name="link4_cap" file="ur5/link4_cap.stl"></mesh>
+    <mesh name="link4_connector" file="ur5/link4_connector.stl"></mesh>
+    <mesh name="link5" file="ur5/link5.stl"></mesh>
+    <mesh name="link5_cap" file="ur5/link5_cap.stl"></mesh>
+    <mesh name="link5_connector" file="ur5/link5_connector.stl"></mesh>
+    <mesh name="link6" file="ur5/link6.stl"></mesh>
+    <mesh name="link6_connector" file="ur5/link6_connector.stl"></mesh>
+
+    <!-- Left AbilityHand -->
+    <mesh name="ability_left:wristmesh" file="ability/left/wristmesh.STL"/>
+    <mesh name="ability_left:FB_palm_ref" file="ability/left/FB_palm_ref.STL"/>
+    <mesh name="ability_left:palm_hull" file="ability/left/palm_hull.STL"/>
+    <mesh name="ability_left:idx-F1" file="ability/left/idx-F1.STL"/>
+    <mesh name="ability_left:idx-F1-hull" file="ability/left/idx-F1-hull.STL"/>
+    <mesh name="ability_left:idx-F2" file="ability/left/idx-F2.STL"/>
+    <mesh name="ability_left:idx-F2-hull" file="ability/left/idx-F2-hull.STL"/>
+    <mesh name="ability_left:thumb-F1" file="ability/left/thumb-F1.STL"/>
+    <mesh name="ability_left:thumb-F1-hull" file="ability/left/thumb-F1-hull.STL"/>
+    <mesh name="ability_left:thumb-F2" file="ability/left/thumb-F2.STL"/>
+    <mesh name="ability_left:thumb-F2-hull" file="ability/left/thumb-F2-hull.STL"/>
+
+    <!-- Right AbilityHand -->
+    <mesh name="ability_right:wristmesh" file="ability/right/wristmesh.STL"/>
+    <mesh name="ability_right:FB_palm_ref_MIR" file="ability/right/FB_palm_ref_MIR.STL"/>
+    <mesh name="ability_right:palm_hull_mir" file="ability/right/palm_hull_mir.STL"/>
+    <mesh name="ability_right:idx-F1" file="ability/right/idx-F1.STL"/>
+    <mesh name="ability_right:idx-F1-hull" file="ability/right/idx-F1-hull.STL"/>
+    <mesh name="ability_right:idx-F2" file="ability/right/idx-F2.STL"/>
+    <mesh name="ability_right:idx-F2-hull" file="ability/right/idx-F2-hull.STL"/>
+    <mesh name="ability_right:thumb-F1-MIR" file="ability/right/thumb-F1-MIR.STL"/>
+    <mesh name="ability_right:thumb-F1-MIR-hull" file="ability/right/thumb-F1-MIR-hull.STL"/>
+    <mesh name="ability_right:thumb-F2" file="ability/right/thumb-F2.STL"/>
+    <mesh name="ability_right:thumb-F2-hull" file="ability/right/thumb-F2-hull.STL"/>
+</mujoco>

@@ -1,0 +1,207 @@
+data:
+  features: True
+  demo_root: /home/bfshi/data/bimanual/features/features_mean/vitb-mae-egosoup
+  demo_dirs: ["pick-yellow-cube_02-29-2024"]
+  inmem: True
+  offset: 0
+  num_train: 80
+  num_test: 0
+  im_size: 224
+  cams: ["left", "head", "right"]
+  default_pos_left_arm: [-4.065179173146383, -0.8556114000133057, 1.419995133076803, -3.108495374719137, -1.3419583479510706, 0,]
+  default_pos_right_arm:  [-2.198981587086813, -2.2018891773619593, -1.534730076789856, -0.1098826688579102, 1.2620022296905518, 0,]
+  joint_noise_mean: [0., 0., 0., 0., 0., 0.,
+                     0., 0., 0., 0., 0., 0.,
+                     0., 0., 0., 0., 0., 0.,
+                     0., 0., 0., 0., 0., 0.]
+  joint_noise_std: [0.0213, 0.0246, 0.0211, 0.0378, 0.0382, 0.0255,
+                    0.0273, 0.0373, 0.0329, 0.0500, 0.0738, 0.0741,
+                    0.0202, 0.0198, 0.0211, 0.0417, 0.0396, 0.0308,
+                    0.0795, 0.0652, 0.0638, 0.0567, 0.0532, 0.0575]
+  joint_noise_std_scale: 1.0
+  feats_noise_std: 0.0
+  noisy_skip: False
+  frame_skip: 0
+  data_filter: {}  # in bash: +data.data_filter={object:blue\ cube}
+  history_repeating: 0  # the probability of adding repeating history in the training data
+  img_sample_num: -1   # if not doing image sampling, set to -1
+  pi_obs_dim: 2312
+  pi_act_dim: 8
+  loss_weight: 10000
+  action_data_ratio: null  # should be a list with same length as demo_dirs
+  use_touch: False
+  skip_failure: True
+  img_downsample: 2
+
+actor:
+  type: "transformer"
+  num_steps: 16
+  im_dim: 1024
+  prompt_dim: 1024
+  cmd_dim: 3
+  obs_dim: 2388
+  act_dim: 2412
+  num_pred: 1
+  num_exec: 1
+  look_ahead: 0
+  pred_type: "extrap"  # interp / extrap
+  pred_action_only: False
+  pred_state_only: False
+  prompt_loss_weight: 0
+  state_loss_weight: 0.1
+
+mlp:
+  ws: [256, 128, 64]
+  init: "orthogonal"
+
+transformer:
+  pos_emb_type: sincos
+  hidden_dim: 192
+  num_heads: 4
+  mlp_ratio: 2.0
+  num_blocks: 4
+  time_dropout: 0.0
+
+transformer_concat:
+  causal: True
+  in_proj_hidden_sizes: []
+  embed_dim: 384
+  num_blocks: 6
+  num_heads: 8
+  mlp_ratio: 2.0
+  attn_dropout: 0.0
+  mlp_dropout: 0.0
+  last_layer_norm: False
+  head_hidden_sizes: []
+  normalize_input: True
+
+diffusion:
+  num_diffusion_steps: 10
+
+train:
+  weights:
+  warmup_ep: 10
+  num_ep: 100
+  mb_size: 128
+  lr: 0.0005
+  wd: 0.01
+  clip_norm: 0.0
+
+tokenizer:
+  model_type: 'mlp'
+  codebook_sizes: [16384, 16384, 16384, 16384]
+
+train_tokenizer:
+  enc_dec_weights:
+  train_enc_dec_only: False
+  input_noise_scale: 0.
+
+test:
+  weights:
+  freq: 20
+
+robot:
+  pgain_action_scale: 100.0
+  dgain_action_scale: 0.1
+  kps:
+    hip-roll: 200.0
+    hip-yaw: 200.0
+    hip-pitch: 500.
+    knee: 500.
+    toe-A: 80.
+    toe-B: 80.
+    shoulder-roll: 150.
+    shoulder-pitch: 150.
+    shoulder-yaw: 150.
+    elbow: 150.
+  kds:
+    hip-roll: 0.2
+    hip-yaw: 0.2
+    hip-pitch: 0.25
+    knee: 0.25
+    toe-A: 0.2
+    toe-B: 0.2
+    shoulder-roll: 0.2
+    shoulder-pitch: 0.2
+    shoulder-yaw: 0.2
+    elbow: 0.2
+  def_dof_pos: [
+     0.357,  # left-hip-roll
+    -0.0065,  # left-hip-yaw
+     0.3091,  # left-hip-pitch
+     0.3304,  # left-knee
+    -0.01,  # left-shin
+    -0.3027,  # left-tarsus
+    -0.01,  # left-heel-spring
+#     -0.147301,  # left-toe-A
+#     0.113339,  # left-toe-B
+     0.1280, # left-toe-pitch
+    -0.0257,  # left-toe-roll
+    -0.1271,  # left-shoulder-roll
+    1.082,  # left-shoulder-pitch
+    0.0014,  # left-shoulder-yaw
+    -0.1356,  # left-elbow
+    -0.357,  # right-hip-roll
+     0.0065,  # right-hip-yaw
+    -0.3091,  # right-hip-pitch
+    -0.3304,  # right-knee
+     0.01,  # right-shin
+     0.3027,  # right-tarsus
+     0.01,  # right-heel-spring
+#     0.147215,  # right-toe-A
+#     -0.113421,  # right-toe-B
+    -0.1280,  # right-toe-pitch
+     0.0257,  # right-toe-roll
+     0.1271,  # right-shoulder-roll
+    -1.082,  # right-shoulder-pitch
+    -0.0014,  # right-shoulder-yaw
+     0.1356   # right-elbow
+  ]
+  def_dof_act: [
+    0.357,  # left-hip-roll
+    -0.0065,  # left-hip-yaw
+    0.3091,  # left-hip-pitch
+    0.3304,  # left-knee
+    -0.1391,  # left-toe-A
+    0.1085,  # left-toe-B
+    -0.357,  # right-hip-roll
+    0.0065,  # right-hip-yaw
+    -0.3091,  # right-hip-pitch
+    -0.3304,  # right-knee
+    0.1391,  # right-toe-A
+    -0.1085,  # right-toe-B
+    -0.1271,  # left-shoulder-roll
+    1.082,  # left-shoulder-pitch
+    0.0014,  # left-shoulder-yaw
+    -0.1356,  # left-elbow
+    0.1271,  # right-shoulder-roll
+    -1.082,  # right-shoulder-pitch
+    -0.0014,  # right-shoulder-yaw
+    0.1356   # right-elbow
+  ]
+
+wandb:
+  name: bc
+  project: mvp-generalize
+#  entity: mvp-robotics
+  mode: online
+
+seed: 0
+num_gpus: 1
+headless: True
+
+logdir: "/home/niudt/tmp/train_1001"
+save_freq: 100
+
+test_only: False
+
+defaults:
+  - _self_
+  - override hydra/job_logging: disabled
+
+hydra:
+  output_subdir: null
+  job:
+    chdir: False
+  run:
+    dir: .

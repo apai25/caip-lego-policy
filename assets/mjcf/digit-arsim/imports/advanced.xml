@@ -1,0 +1,47 @@
+<mujoco model='playground'>
+<asset>
+    <!-- <material name='robot' rgba='0.1 0.5 0.9 0.4' /> -->
+    <material name='robot' rgba='0.96 0.68 0.39 1'/>
+    <mesh name='torso-base-0' scale='1 1 1' file='torso.stl'/>
+    <mesh name='torso-base-1' scale='1 1 1' file='hip-roll-housing.stl'/>
+    <mesh name='torso-base-2' scale='1 1 1' file='link-0.stl'/>
+    <mesh name='torso-base-3' scale='1 -1 1' file='hip-roll-housing.stl'/>
+    <mesh name='torso-base-4' scale='1 -1 1' file='link-0.stl'/>
+    <mesh name='left-hip-roll-0' scale='1 1 1' file='hip-yaw-housing.stl'/>
+    <mesh name='left-hip-yaw-0' scale='1 1 1' file='hip-pitch-housing.stl'/>
+    <mesh name='left-hip-pitch-0' scale='1 1 1' file='hip-pitch.stl'/>
+    <mesh name='left-achilles-rod-0' scale='1 1 1' file='achilles-rod.stl'/>
+    <mesh name='left-knee-0' scale='1 1 1' file='knee.stl'/>
+    <mesh name='left-shin-0' scale='1 1 1' file='shin.stl'/>
+    <mesh name='left-tarsus-0' scale='1 1 1' file='tarsus.stl'/>
+    <mesh name='left-heel-spring-0' scale='1 1 1' file='heel-spring.stl'/>
+    <mesh name='left-toe-A-0' scale='1 1 1' file='toe-output.stl'/>
+    <mesh name='left-toe-A-rod-0' scale='1 1 1' file='toe-A-rod.stl'/>
+    <mesh name='left-toe-B-0' scale='1 1 1' file='toe-output.stl'/>
+    <mesh name='left-toe-B-rod-0' scale='1 1 1' file='toe-B-rod.stl'/>
+    <mesh name='left-toe-pitch-0' scale='1 1 1' file='toe-pitch.stl'/>
+    <mesh name='left-toe-roll-0' scale='1 1 1' file='toe-roll.stl'/>
+    <mesh name='left-shoulder-roll-0' scale='1 1 1' file='link-1.stl'/>
+    <mesh name='left-shoulder-pitch-0' scale='1 1 1' file='link-2.stl'/>
+    <mesh name='left-shoulder-yaw-0' scale='1 1 1' file='link-3.stl'/>
+    <mesh name='left-elbow-0' scale='1 1 1' file='link-4.stl'/>
+    <mesh name='right-hip-roll-0' scale='1 -1 1' file='hip-yaw-housing.stl'/>
+    <mesh name='right-hip-yaw-0' scale='1 -1 1' file='hip-pitch-housing.stl'/>
+    <mesh name='right-hip-pitch-0' scale='1 -1 1' file='hip-pitch.stl'/>
+    <mesh name='right-achilles-rod-0' scale='1 -1 1' file='achilles-rod.stl'/>
+    <mesh name='right-knee-0' scale='1 -1 1' file='knee.stl'/>
+    <mesh name='right-shin-0' scale='1 -1 1' file='shin.stl'/>
+    <mesh name='right-tarsus-0' scale='1 -1 1' file='tarsus.stl'/>
+    <mesh name='right-heel-spring-0' scale='1 -1 1' file='heel-spring.stl'/>
+    <mesh name='right-toe-A-0' scale='1 -1 1' file='toe-output.stl'/>
+    <mesh name='right-toe-A-rod-0' scale='1 -1 1' file='toe-A-rod.stl'/>
+    <mesh name='right-toe-B-0' scale='1 -1 1' file='toe-output.stl'/>
+    <mesh name='right-toe-B-rod-0' scale='1 -1 1' file='toe-B-rod.stl'/>
+    <mesh name='right-toe-pitch-0' scale='1 -1 1' file='toe-pitch.stl'/>
+    <mesh name='right-toe-roll-0' scale='1 -1 1' file='toe-roll.stl'/>
+    <mesh name='right-shoulder-roll-0' scale='1 -1 1' file='link-1.stl'/>
+    <mesh name='right-shoulder-pitch-0' scale='1 -1 1' file='link-2.stl'/>
+    <mesh name='right-shoulder-yaw-0' scale='1 -1 1' file='link-3.stl'/>
+    <mesh name='right-elbow-0' scale='1 -1 1' file='link-4.stl'/>
+</asset>
+</mujoco>
