@@ -504,6 +504,267 @@ class Bimanual_Dataset(torch.utils.data.Dataset):
 
 
 
+class BKL_Dataset(torch.utils.data.Dataset):
+    """Dataset for BKL embodiment data.
+
+    Each episode is stored as:
+      - A single HDF5 file with state/action trajectories
+      - Pre-extracted vision features in a separate features.h5
+      - Camera names: left_wrist, right_wrist, head
+
+    State: [left_arm_joint_positions(7), right_arm_joint_positions(7),
+            left_hand_joint_positions(22), right_hand_joint_positions(22)] = 58 dims
+    Action: [left_arm_target_dofs(7), right_arm_target_dofs(7),
+             left_hand_target_joint_positions(22), right_hand_target_joint_positions(22)] = 58 dims
+    """
+
+    STATE_DIM = 58
+    ACTION_DIM = 58
+
+    def __init__(
+            self, features, demo_root, demo_dirs, inmem,
+            start_ind=0, num_demos=1000000,
+            im_size=224, cams=["left_wrist", "right_wrist", "head"], num_steps=1, num_pred=1, look_ahead=0,
+            noisy_skip=False, frame_skip=0,
+            joint_noise_mean=0.0, joint_noise_std=0.0, joint_noise_std_scale=1.0, feats_noise_std=0.0,
+            history_repeating=0.0, img_sample_num=-1,
+            prompt_text="pour the sugar", prompt_embedding=None, prompt_embedding_path=None,
+            skip_failure=True,
+            **kwargs,  # absorb unused args from old config
+    ):
+        # Load prompt embedding from path if provided
+        if prompt_embedding is None and prompt_embedding_path is not None:
+            prompt_embedding = np.load(prompt_embedding_path).astype(np.float32)
+
+        self._features = features
+        self._demo_root = demo_root
+        self._demo_dirs = demo_dirs
+        self._inmem = inmem
+        self._l_ind = start_ind
+        self._r_ind = start_ind + num_demos
+        self._im_size = im_size
+        self._cams = cams
+        self._cam_keys = [f"feat_{cam}" for cam in cams]
+        self._num_steps = num_steps
+        self._num_pred = num_pred
+        self._look_ahead = look_ahead
+        self._noisy_skip = noisy_skip
+        self._frame_skip = frame_skip
+        self._joint_noise_mean = np.zeros(self.STATE_DIM) if isinstance(joint_noise_mean, (int, float)) and joint_noise_mean == 0.0 else np.array(joint_noise_mean)
+        self._joint_noise_std = np.zeros(self.STATE_DIM) if isinstance(joint_noise_std, (int, float)) and joint_noise_std == 0.0 else np.array(joint_noise_std)
+        self._joint_noise_std_scale = joint_noise_std_scale
+        self._feats_noise_std = feats_noise_std
+        self._history_repeating = history_repeating
+        self._img_sample_num = img_sample_num
+        self._prompt_text = prompt_text
+        self._prompt_embedding = np.array(prompt_embedding) if prompt_embedding is not None else None
+        self._skip_failure = skip_failure
+        self._feature_files = []
+        self._all_prompts_text = [prompt_text]
+        self._dataset = self._construct()
+        self._feature_files = np.array(self._feature_files)
+
+    def _load_episode_h5(self, h5_path):
+        """Load state and action arrays from a single episode HDF5 file."""
+        with h5py.File(h5_path, 'r') as f:
+            left_arm_pos = f['left_arm_joint_positions'][:].astype(np.float32)    # (T, 7)
+            right_arm_pos = f['right_arm_joint_positions'][:].astype(np.float32)  # (T, 7)
+            left_hand_pos = f['left_hand_joint_positions'][:].astype(np.float32)  # (T, 22)
+            right_hand_pos = f['right_hand_joint_positions'][:].astype(np.float32) # (T, 22)
+
+            left_arm_cmd = f['left_arm_target_dofs'][:].astype(np.float32)              # (T, 7)
+            right_arm_cmd = f['right_arm_target_dofs'][:].astype(np.float32)            # (T, 7)
+            left_hand_cmd = f['left_hand_target_joint_positions'][:].astype(np.float32) # (T, 22)
+            right_hand_cmd = f['right_hand_target_joint_positions'][:].astype(np.float32) # (T, 22)
+
+        states = np.concatenate([left_arm_pos, right_arm_pos, left_hand_pos, right_hand_pos], axis=1)  # (T, 58)
+        actions = np.concatenate([left_arm_cmd, right_arm_cmd, left_hand_cmd, right_hand_cmd], axis=1)  # (T, 58)
+        return states, actions
+
+    def _construct(self):
+        print("Loading BKL demos from: {}".format(self._demo_root))
+        print("Loading demo dirs: {}".format(self._demo_dirs))
+        dataset = []
+        demo_lens = []
+
+        # Collect episode paths
+        episode_paths = []
+        for demo_dir_name in sorted(self._demo_dirs):
+            demo_dir_path = os.path.join(self._demo_root, demo_dir_name)
+            # Check for success/failure subdirectory structure
+            if os.path.isdir(os.path.join(demo_dir_path, "success")):
+                search_dir = os.path.join(demo_dir_path, "success")
+            else:
+                search_dir = demo_dir_path
+            for ep_name in sorted(os.listdir(search_dir)):
+                ep_path = os.path.join(search_dir, ep_name)
+                if not os.path.isdir(ep_path):
+                    continue
+                episode_paths.append(ep_path)
+        # Take the desired range
+        episode_paths = episode_paths[self._l_ind:self._r_ind]
+
+        prompt = self._prompt_embedding
+        prompt_text = self._prompt_text
+
+        for i, ep_path in enumerate(tqdm(episode_paths)):
+            ep_name = os.path.basename(ep_path)
+            h5_path = os.path.join(ep_path, f"{ep_name}.h5")
+            if not os.path.exists(h5_path):
+                print(f"Warning: skipping {ep_path}, no h5 file found")
+                continue
+
+            states, actions = self._load_episode_h5(h5_path)
+            T = len(states)
+            demo_lens.append(T)
+
+            # Feature file (pre-extracted vision features)
+            feature_file = os.path.join(ep_path, "features.h5")
+            self._feature_files.append(feature_file)
+
+            visible_cam_keys = self._cam_keys
+
+            for k in range(T - 1):
+                frame_skip = np.random.randint(self._frame_skip + 1) if self._noisy_skip else self._frame_skip
+                t1 = min(k + frame_skip + 1, T - 1)
+
+                state_t = states[k]
+                act_t = actions[t1]
+
+                mod_mask = np.ones(self.STATE_DIM + self.ACTION_DIM, dtype=np.float32)
+
+                element = {
+                    "demo_ind": i,
+                    "step_ind": k,
+                    "state": state_t,
+                    "action": act_t,
+                    "frame_skip": t1 - k,
+                    "process_state": k != 0,
+                    "mod_mask": mod_mask,
+                    "prompt": prompt,
+                    "prompt_text": prompt_text,
+                    "padded": False,
+                    "visible_cam_keys": visible_cam_keys,
+                }
+                if k == 0:
+                    # prepad with stationary states
+                    for _ in range(self._num_steps - self._num_pred + self._look_ahead):
+                        e_pad = copy.deepcopy(element)
+                        e_pad["action"] = e_pad["state"].copy()
+                        e_pad["frame_skip"] = 1
+                        e_pad["process_state"] = True
+                        e_pad["padded"] = True
+                        e_pad["prompt"] = np.zeros_like(e_pad["prompt"]) if e_pad["prompt"] is not None else None
+                        dataset.append(e_pad)
+                dataset.append(element)
+
+        print("Total num demos: {:,}".format(len(demo_lens)))
+        print("Total num steps: {:,}".format(len(dataset)))
+        print("Mean demo len: {:.3f}".format(np.mean(demo_lens)))
+        return dataset
+
+    def process_state(self, state):
+        noise = np.random.normal(self._joint_noise_mean, self._joint_noise_std * self._joint_noise_std_scale).astype(
+            np.float32)
+        state = state.copy()
+        state += noise
+        return state
+
+    def __getitem__(self, ind):
+        # Retrieve dataset entries
+        demo_ind = self._dataset[ind]["demo_ind"]
+        entries = []
+        j = ind
+        for _ in range(self._num_steps + self._look_ahead):
+            cur_entry = self._dataset[j]
+            if cur_entry["demo_ind"] != demo_ind:
+                break
+            entries.append(cur_entry)
+            j += cur_entry["frame_skip"]
+            if j >= len(self):
+                break
+        pad_num = self._num_steps + self._look_ahead - len(entries)
+        if pad_num > 0:
+            entries = entries + [entries[-1] for _ in range(pad_num)]
+        len_entries = len(entries)
+
+        # Retrieve images/features
+        visible_cam_keys = entries[0]['visible_cam_keys']
+        if self._img_sample_num == -1:
+            img_selected_ids = list(range(self._num_steps))
+            entries_w_img = entries[:len_entries - self._look_ahead]
+        else:
+            img_selected_ids = random.sample(range(self._num_steps - self._num_pred), self._img_sample_num) + \
+                               random.sample(range(self._num_steps - self._num_pred, self._num_steps), self._img_sample_num)
+            img_selected_ids = sorted(img_selected_ids)
+            entries_w_img = [entries[id] for id in img_selected_ids]
+
+        step_inds = [entry['step_ind'] for entry in entries_w_img]
+        unique_step_inds = sorted(list(set(step_inds)))
+        feature_file = self._feature_files[demo_ind]
+        if os.path.exists(feature_file):
+            with h5py.File(feature_file, 'r') as hf:
+                features = hf['features'][unique_step_inds].copy()
+            ind_to_feature = {ind: features[i] for i, ind in enumerate(unique_step_inds)}
+            im_data_all = [{cam_key: ind_to_feature[ind][cam_id] for cam_id, cam_key in enumerate(visible_cam_keys)}
+                           for ind in step_inds]
+        else:
+            # No features yet — return zeros (for testing data pipeline without vision)
+            im_data_all = [{cam_key: np.zeros(768, dtype=np.float32) for cam_key in visible_cam_keys}
+                           for _ in step_inds]
+
+        # Process images/features
+        ims = [[] for _ in self._cams]
+        for im_data in im_data_all:
+            for cam_id, cam_key in enumerate(self._cam_keys):
+                if cam_key not in visible_cam_keys:
+                    continue
+                ims[cam_id].append(im_data[cam_key])
+        for cam_id, cam_key in enumerate(self._cam_keys):
+            if cam_key not in visible_cam_keys:
+                ims[cam_id] = copy.deepcopy(ims[self._cam_keys.index(visible_cam_keys[0])])
+
+        # Retrieve states/actions
+        state_noiseless = [
+            entry["state"].astype(np.float32)[None, ...] for entry in entries[:len_entries - self._look_ahead]
+        ]
+        state = [
+            self.process_state(entry["state"]).astype(np.float32)[None, ...] if entry["process_state"] else
+            entry["state"].astype(np.float32)[None, ...] for entry in entries[:len_entries - self._look_ahead]
+        ]
+        action = [entry["action"].astype(np.float32)[None, ...] for entry in entries[self._look_ahead:]]
+        if entries[0]["prompt"] is not None:
+            prompts = [entry["prompt"].astype(np.float32)[None, ...] for entry in entries[:len_entries - self._look_ahead]]
+            prompts_text = [entry["prompt_text"] for entry in entries[:len_entries - self._look_ahead]]
+        else:
+            prompts = [np.zeros((1,), dtype=np.float32) for entry in entries[:len_entries - self._look_ahead]]
+            prompts_text = ["" for entry in entries[:len_entries - self._look_ahead]]
+        mod_mask = [entry['mod_mask'].astype(np.float32)[None, ...] for entry in entries[:len_entries - self._look_ahead]]
+
+        # Stack to tensors
+        ims = [torch.tensor(np.stack(ims_c, axis=0)) for ims_c in ims]
+        state = torch.Tensor(np.concatenate(state, axis=0))
+        state_noiseless = torch.Tensor(np.concatenate(state_noiseless, axis=0))
+        action = torch.Tensor(np.concatenate(action, axis=0))
+        prompts = torch.Tensor(np.concatenate(prompts, axis=0))
+        mod_mask = torch.Tensor(np.concatenate(mod_mask, axis=0))
+
+        pi_obs = state
+        pi_obs_noiseless = state_noiseless
+        pi_act = action
+
+        att_mask = [float(entry["padded"]) for entry in entries[:len_entries - self._look_ahead]]
+        att_mask = torch.Tensor(np.array(att_mask))
+
+        img_selected_ids = torch.LongTensor(img_selected_ids)
+        visible_cam_mask = torch.Tensor([1 if key in visible_cam_keys else 0 for key in self._cam_keys])
+
+        return ims, pi_obs, pi_obs_noiseless, pi_act, prompts, prompts_text, visible_cam_mask, mod_mask, att_mask, img_selected_ids
+
+    def __len__(self):
+        return len(self._dataset)
+
+
 class Bimanual_Dataset_NoImage(Bimanual_Dataset):
     """
     Dataset class for training tokenizers only. Only return states and actions.

@@ -16,7 +16,15 @@
       "Bash(cp /tmp/mvp-orig/mvp-generalize-master/mvp/bimanual_bc/bc.py mvp/bimanual_bc/bc.py)",
       "Bash(cp /tmp/mvp-orig/mvp-generalize-master/mvp/bimanual_bc/actor.py mvp/bimanual_bc/actor.py)",
       "Bash(cp /tmp/mvp-orig/mvp-generalize-master/mvp/vision_model/vit.py mvp/vision_model/vit.py)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(cp /tmp/mvp-modified/mvp/bimanual_bc/dataset.py mvp/bimanual_bc/dataset.py)",
+      "Bash(cp /tmp/mvp-modified/mvp/bimanual_bc/bc.py mvp/bimanual_bc/bc.py)",
+      "Bash(cp /tmp/mvp-modified/mvp/bimanual_bc/actor.py mvp/bimanual_bc/actor.py)",
+      "Bash(cp /tmp/mvp-modified/mvp/vision_model/vit.py mvp/vision_model/vit.py)",
+      "Bash(cp /tmp/mvp-modified/configs/bimanual_bc/config_bkl.yaml configs/bimanual_bc/config_bkl.yaml)",
+      "Bash(ls /mnt/amlfs-02/shared/human_egocentric/dniu/datasets/bkl_inlab/raw/task_data/sugar_pour_merged_04-07-2026_100/success/*/features.h5)",
+      "Bash(ps:*)"
     ]
   }
 }

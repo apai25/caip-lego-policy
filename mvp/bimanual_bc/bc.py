@@ -23,7 +23,7 @@ from mvp.bimanual_bc.actor import ActorTransformerConcat_Bimanual, \
     ActorTransformerConcatAttnPooling_Bimanual, \
     ActorTransformerConcatMeanPooling_Bimanual, \
     ActorTransformerConcatAttnPoolingDiffusion_Bimanual
-from mvp.bimanual_bc.dataset import Bimanual_Dataset
+from mvp.bimanual_bc.dataset import Bimanual_Dataset, BKL_Dataset
 from mvp.utils.meters import TrainMeter, TestMeter
 from mvp.utils.utils import adjust_lr
 from mvp.utils.utils import get_optimizer_groups
@@ -85,8 +85,9 @@ def test_epoch(cfg, test_loader, model, meter, cur_epoch):
         for img_mask, cam_mask in zip(img_masks, cam_masks):
             img_mask[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = 1
             img_mask = img_mask * cam_mask[..., None]
-        state_mask = mod_mask[:, :, :-24]
-        action_mask = mod_mask[:, :, -24:]
+        _act_dim = pi_act.shape[-1]
+        state_mask = mod_mask[:, :, :-_act_dim]
+        action_mask = mod_mask[:, :, -_act_dim:]
         mask_each_mod = [prompt_mask] + img_masks + [state_mask]
 
         # model feedforward
@@ -106,17 +107,15 @@ def test_epoch(cfg, test_loader, model, meter, cur_epoch):
             loss_each_mod[-1] = model.module.compute_diffusion_loss(preds_each_mod[-1], targets_each_mod[-1], loss_mask_each_mod[-1])
 
         prompt_loss = loss_each_mod[0]
-        img_left_loss = loss_each_mod[1]
-        img_head_loss = loss_each_mod[2]
-        img_right_loss = loss_each_mod[3]
-        img_loss = (img_left_loss + img_head_loss + img_right_loss) / 3
+        num_cams = len(cfg.data.cams)
+        img_losses = loss_each_mod[1:1 + num_cams]
+        img_loss = sum(img_losses) / num_cams
         state_loss = loss_each_mod[-2]
         action_loss = loss_each_mod[-1]
         print('##########')
         print('Prompt loss:', prompt_loss)
-        print('Image (left) loss:', img_left_loss)
-        print('Image (head) loss:', img_head_loss)
-        print('Image (right) loss:', img_right_loss)
+        for i, cam in enumerate(cfg.data.cams):
+            print(f'Image ({cam}) loss:', img_losses[i])
         print('State loss:', state_loss)
         print('Action loss:', action_loss)
         print('##########')
@@ -194,8 +193,9 @@ def train_epoch(cfg, train_loader, model, optimizer, meter, cur_epoch):
         for img_mask, cam_mask in zip(img_masks, cam_masks):
             img_mask[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = 1
             img_mask = img_mask * cam_mask[..., None]
-        state_mask = mod_mask[:, :, :-24]
-        action_mask = mod_mask[:, :, -24:]
+        _act_dim = pi_act.shape[-1]
+        state_mask = mod_mask[:, :, :-_act_dim]
+        action_mask = mod_mask[:, :, -_act_dim:]
         mask_each_mod = [prompt_mask] + img_masks + [state_mask]
 
         # model feedforward
@@ -251,35 +251,61 @@ def train(cfg):
 
     # Construct train dataset/loader
     random.seed(cfg.seed)
-    # RPT dataset
-    train_dataset = Bimanual_Dataset(
-        features=cfg.data.features,
-        demo_root=cfg.data.demo_root,
-        demo_dirs=cfg.data.demo_dirs,
-        inmem=cfg.data.inmem,
-        start_ind=cfg.data.offset,
-        num_demos=cfg.data.num_train,
-        num_steps=cfg.actor.num_steps + cfg.actor.num_pred,
-        num_pred=cfg.actor.num_pred,
-        look_ahead=cfg.actor.look_ahead,
-        im_size=cfg.data.im_size,
-        cams=cfg.data.cams,
-        noisy_skip=cfg.data.noisy_skip,
-        frame_skip=cfg.data.frame_skip,
-        default_pos_left_arm=cfg.data.default_pos_left_arm,
-        default_pos_right_arm=cfg.data.default_pos_right_arm,
-        joint_noise_mean=cfg.data.joint_noise_mean,
-        joint_noise_std=cfg.data.joint_noise_std,
-        joint_noise_std_scale=cfg.data.joint_noise_std_scale,
-        feats_noise_std=cfg.data.feats_noise_std,
-        data_filter=cfg.data.data_filter,
-        history_repeating=cfg.data.history_repeating,
-        img_sample_num=cfg.data.img_sample_num,
-        use_all_features=False,
-        action_data_ratio=cfg.data.action_data_ratio,
-        use_touch=cfg.data.use_touch,
-        skip_failure=cfg.data.skip_failure,
-    )
+    dataset_type = getattr(cfg.data, 'dataset_type', 'bimanual')
+    if dataset_type == 'bkl':
+        train_dataset = BKL_Dataset(
+            features=cfg.data.features,
+            demo_root=cfg.data.demo_root,
+            demo_dirs=cfg.data.demo_dirs,
+            inmem=cfg.data.inmem,
+            start_ind=cfg.data.offset,
+            num_demos=cfg.data.num_train,
+            num_steps=cfg.actor.num_steps + cfg.actor.num_pred,
+            num_pred=cfg.actor.num_pred,
+            look_ahead=cfg.actor.look_ahead,
+            im_size=cfg.data.im_size,
+            cams=cfg.data.cams,
+            noisy_skip=cfg.data.noisy_skip,
+            frame_skip=cfg.data.frame_skip,
+            joint_noise_mean=cfg.data.joint_noise_mean,
+            joint_noise_std=cfg.data.joint_noise_std,
+            joint_noise_std_scale=cfg.data.joint_noise_std_scale,
+            feats_noise_std=cfg.data.feats_noise_std,
+            history_repeating=cfg.data.history_repeating,
+            img_sample_num=cfg.data.img_sample_num,
+            prompt_text=getattr(cfg.data, 'prompt_text', 'pour the sugar'),
+            prompt_embedding=getattr(cfg.data, 'prompt_embedding', None),
+            prompt_embedding_path=getattr(cfg.data, 'prompt_embedding_path', None),
+        )
+    else:
+        train_dataset = Bimanual_Dataset(
+            features=cfg.data.features,
+            demo_root=cfg.data.demo_root,
+            demo_dirs=cfg.data.demo_dirs,
+            inmem=cfg.data.inmem,
+            start_ind=cfg.data.offset,
+            num_demos=cfg.data.num_train,
+            num_steps=cfg.actor.num_steps + cfg.actor.num_pred,
+            num_pred=cfg.actor.num_pred,
+            look_ahead=cfg.actor.look_ahead,
+            im_size=cfg.data.im_size,
+            cams=cfg.data.cams,
+            noisy_skip=cfg.data.noisy_skip,
+            frame_skip=cfg.data.frame_skip,
+            default_pos_left_arm=cfg.data.default_pos_left_arm,
+            default_pos_right_arm=cfg.data.default_pos_right_arm,
+            joint_noise_mean=cfg.data.joint_noise_mean,
+            joint_noise_std=cfg.data.joint_noise_std,
+            joint_noise_std_scale=cfg.data.joint_noise_std_scale,
+            feats_noise_std=cfg.data.feats_noise_std,
+            data_filter=cfg.data.data_filter,
+            history_repeating=cfg.data.history_repeating,
+            img_sample_num=cfg.data.img_sample_num,
+            use_all_features=False,
+            action_data_ratio=cfg.data.action_data_ratio,
+            use_touch=cfg.data.use_touch,
+            skip_failure=cfg.data.skip_failure,
+        )
             
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -293,34 +319,61 @@ def train(cfg):
     # Construct test dataset/loader
     if cfg.data.num_test > 0:
         random.seed(cfg.seed)
-        test_dataset = Bimanual_Dataset(
-            features=cfg.data.features,
-            demo_root=cfg.data.demo_root,
-            demo_dirs=cfg.data.demo_dirs,
-            inmem=cfg.data.inmem,
-            start_ind=cfg.data.offset + cfg.data.num_train,
-            num_demos=cfg.data.num_test,
-            num_steps=cfg.actor.num_steps + cfg.actor.num_pred,
-            num_pred=cfg.actor.num_pred,
-            look_ahead=cfg.actor.look_ahead,
-            im_size=cfg.data.im_size,
-            cams=cfg.data.cams,
-            noisy_skip=cfg.data.noisy_skip,
-            frame_skip=cfg.data.frame_skip,
-            default_pos_left_arm=cfg.data.default_pos_left_arm,
-            default_pos_right_arm=cfg.data.default_pos_right_arm,
-            joint_noise_mean=[0.] * 24,
-            joint_noise_std=[0.] * 24,
-            joint_noise_std_scale=cfg.data.joint_noise_std_scale,
-            feats_noise_std=0.0,
-            data_filter=cfg.data.data_filter,
-            history_repeating=cfg.data.history_repeating,
-            img_sample_num=cfg.data.img_sample_num,
-            use_all_features=False,
-            action_data_ratio=cfg.data.action_data_ratio,
-            use_touch=cfg.data.use_touch,
-            skip_failure=cfg.data.skip_failure,
-        )
+        if dataset_type == 'bkl':
+            state_dim = BKL_Dataset.STATE_DIM
+            test_dataset = BKL_Dataset(
+                features=cfg.data.features,
+                demo_root=cfg.data.demo_root,
+                demo_dirs=cfg.data.demo_dirs,
+                inmem=cfg.data.inmem,
+                start_ind=cfg.data.offset + cfg.data.num_train,
+                num_demos=cfg.data.num_test,
+                num_steps=cfg.actor.num_steps + cfg.actor.num_pred,
+                num_pred=cfg.actor.num_pred,
+                look_ahead=cfg.actor.look_ahead,
+                im_size=cfg.data.im_size,
+                cams=cfg.data.cams,
+                noisy_skip=cfg.data.noisy_skip,
+                frame_skip=cfg.data.frame_skip,
+                joint_noise_mean=[0.] * state_dim,
+                joint_noise_std=[0.] * state_dim,
+                joint_noise_std_scale=cfg.data.joint_noise_std_scale,
+                feats_noise_std=0.0,
+                history_repeating=cfg.data.history_repeating,
+                img_sample_num=cfg.data.img_sample_num,
+                prompt_text=getattr(cfg.data, 'prompt_text', 'pour the sugar'),
+                prompt_embedding=getattr(cfg.data, 'prompt_embedding', None),
+                prompt_embedding_path=getattr(cfg.data, 'prompt_embedding_path', None),
+            )
+        else:
+            test_dataset = Bimanual_Dataset(
+                features=cfg.data.features,
+                demo_root=cfg.data.demo_root,
+                demo_dirs=cfg.data.demo_dirs,
+                inmem=cfg.data.inmem,
+                start_ind=cfg.data.offset + cfg.data.num_train,
+                num_demos=cfg.data.num_test,
+                num_steps=cfg.actor.num_steps + cfg.actor.num_pred,
+                num_pred=cfg.actor.num_pred,
+                look_ahead=cfg.actor.look_ahead,
+                im_size=cfg.data.im_size,
+                cams=cfg.data.cams,
+                noisy_skip=cfg.data.noisy_skip,
+                frame_skip=cfg.data.frame_skip,
+                default_pos_left_arm=cfg.data.default_pos_left_arm,
+                default_pos_right_arm=cfg.data.default_pos_right_arm,
+                joint_noise_mean=[0.] * 24,
+                joint_noise_std=[0.] * 24,
+                joint_noise_std_scale=cfg.data.joint_noise_std_scale,
+                feats_noise_std=0.0,
+                data_filter=cfg.data.data_filter,
+                history_repeating=cfg.data.history_repeating,
+                img_sample_num=cfg.data.img_sample_num,
+                use_all_features=False,
+                action_data_ratio=cfg.data.action_data_ratio,
+                use_touch=cfg.data.use_touch,
+                skip_failure=cfg.data.skip_failure,
+            )
         test_loader = torch.utils.data.DataLoader(
             test_dataset,
             batch_size=(cfg.train.mb_size // cfg.num_gpus),
@@ -336,8 +389,10 @@ def train(cfg):
                               "transformer_concat_attnpool_diffusion"]
     prompt_output_dim = [cfg.actor.prompt_dim]
     img_output_dim = [cfg.actor.im_dim for _ in range(len(cfg.data.cams))]
-    state_output_dim = [84 if cfg.data.use_touch else 24]
-    action_output_dim = [24]
+    state_dim = getattr(cfg.data, 'state_dim', 84 if getattr(cfg.data, 'use_touch', False) else 24)
+    action_dim = getattr(cfg.data, 'action_dim', 24)
+    state_output_dim = [state_dim]
+    action_output_dim = [action_dim]
     output_dims = prompt_output_dim + img_output_dim + state_output_dim + action_output_dim
     if cfg.actor.type == "transformer_concat":
         model = ActorTransformerConcat_Bimanual(

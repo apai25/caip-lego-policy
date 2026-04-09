@@ -1,0 +1,122 @@
+data:
+  dataset_type: bkl
+  features: True
+  demo_root: /mnt/amlfs-02/shared/human_egocentric/dniu/datasets/bkl_inlab/raw/task_data
+  demo_dirs: ["sugar_pour_merged_04-07-2026_100"]
+  inmem: False
+  offset: 0
+  num_train: 90
+  num_test: 10
+  im_size: 224
+  cams: ["left_wrist", "right_wrist", "head"]
+  prompt_text: "pour the sugar"
+  prompt_embedding_path: "configs/bimanual_bc/bkl_prompt_embedding.npy"
+
+  # BKL: 7 arm + 7 arm + 22 hand + 22 hand = 58
+  state_dim: 58
+  action_dim: 58
+
+  # No joint noise for now (58 dims)
+  joint_noise_mean: [0., 0., 0., 0., 0., 0., 0.,
+                     0., 0., 0., 0., 0., 0., 0.,
+                     0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                     0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                     0., 0., 0., 0., 0., 0., 0., 0.]
+  joint_noise_std: [0., 0., 0., 0., 0., 0., 0.,
+                    0., 0., 0., 0., 0., 0., 0.,
+                    0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                    0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                    0., 0., 0., 0., 0., 0., 0., 0.]
+  joint_noise_std_scale: 1.0
+  feats_noise_std: 0.0
+  noisy_skip: False
+  frame_skip: 0
+  history_repeating: 0
+  img_sample_num: -1
+  img_downsample: 2
+  skip_failure: True
+
+actor:
+  type: "transformer_concat"
+  num_steps: 16
+  im_dim: 768
+  prompt_dim: 768
+  cmd_dim: 3
+  # obs_dim = prompt_dim + num_cams * im_dim + state_dim = 768 + 3*768 + 58 = 3130
+  obs_dim: 3130
+  # act_dim not used directly — output_dims computed in bc.py
+  act_dim: 3188
+  num_pred: 1
+  num_exec: 1
+  look_ahead: 0
+  pred_type: "extrap"
+  pred_action_only: True
+  pred_state_only: False
+  prompt_loss_weight: 0
+  state_loss_weight: 0.1
+
+mlp:
+  ws: [256, 128, 64]
+  init: "orthogonal"
+
+transformer:
+  pos_emb_type: sincos
+  hidden_dim: 192
+  num_heads: 4
+  mlp_ratio: 2.0
+  num_blocks: 4
+  time_dropout: 0.0
+
+transformer_concat:
+  causal: True
+  in_proj_hidden_sizes: []
+  embed_dim: 384
+  num_blocks: 6
+  num_heads: 8
+  mlp_ratio: 2.0
+  attn_dropout: 0.0
+  mlp_dropout: 0.0
+  last_layer_norm: False
+  head_hidden_sizes: []
+  normalize_input: True
+
+diffusion:
+  num_diffusion_steps: 10
+
+train:
+  weights:
+  warmup_ep: 10
+  num_ep: 100
+  mb_size: 512
+  lr: 0.0005
+  wd: 0.01
+  clip_norm: 0.0
+
+test:
+  weights:
+  freq: 20
+
+wandb:
+  name: bkl_pour-sugar_vitb-mae_skip0_pred1_obs16_nonoise_abspos_actonly
+  project: mvp-generalize
+  mode: online
+
+seed: 0
+num_gpus: 8
+headless: True
+
+logdir: "/mnt/amlfs-01/home/dniu/ani/mvp-generalize-master/logs/bkl_sugar_pour"
+save_freq: 100
+
+test_only: False
+
+defaults:
+  - _self_
+  - override hydra/job_logging: disabled
+
+hydra:
+  output_subdir: null
+  job:
+    chdir: False
+  run:
+    dir: .

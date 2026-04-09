@@ -357,8 +357,9 @@ class ActorTransformerConcatAttnPoolingDiffusion_Bimanual(ActorTransformerConcat
         self.attn_pool = nn.ModuleList([Attn_Pool(im_dim, prompt_dim) for _ in range(num_cam)])
 
         self.num_diffusion_steps = num_diffusion_steps
-        self.action_diffusion_head = DiffusionPolicyHead(context_length=kwargs["num_pred"], input_dim=24,
-                                                         input_condition_dim=24, output_dim=24,
+        self._action_dim = output_dims[-1]  # last output dim is the action dim
+        self.action_diffusion_head = DiffusionPolicyHead(context_length=kwargs["num_pred"], input_dim=self._action_dim,
+                                                         input_condition_dim=self._action_dim, output_dim=self._action_dim,
                                                          num_diffusion_steps=num_diffusion_steps)
         self.noise_scheduler = DDPMScheduler(
             num_train_timesteps=num_diffusion_steps,
@@ -421,7 +422,7 @@ class ActorTransformerConcatAttnPoolingDiffusion_Bimanual(ActorTransformerConcat
     def inference_diffusion(self, latent):
         # initial actions are gaussian noise
         B, N, _ = latent.shape
-        actions = torch.randn(B, N, 24, device=latent.device)
+        actions = torch.randn(B, N, self._action_dim, device=latent.device)
 
         # set step values
         self.noise_scheduler.set_timesteps(self.num_diffusion_steps)

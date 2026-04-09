@@ -19,7 +19,7 @@ import torch
 import torch.distributed as dist
 
 
-@hydra.main(version_base=None, config_name="config", config_path="../configs/bimanual_bc")
+@hydra.main(version_base=None, config_name="config_bkl", config_path="../configs/bimanual_bc")
 def train(cfg: omegaconf.DictConfig):
 
     # Set up distributed env

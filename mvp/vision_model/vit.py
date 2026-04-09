@@ -11,7 +11,10 @@ from functools import partial
 import torch
 import torch.nn as nn
 
-from s2wrapper import forward as multiscale_forward
+try:
+    from s2wrapper import forward as multiscale_forward
+except ImportError:
+    multiscale_forward = None
 
 
 def get_1d_sincos_pos_embed(embed_dim, pos):
@@ -40,7 +43,10 @@ class VisionTransformer(timm.models.vision_transformer.VisionTransformer):
     def __init__(self, **kwargs):
         super(VisionTransformer, self).__init__(**kwargs)
         # remove the classifier
-        del self.pre_logits, self.head
+        if hasattr(self, 'pre_logits'):
+            del self.pre_logits
+        if hasattr(self, 'head'):
+            del self.head
 
     def extract_feat(self, x):
         B = x.shape[0]
