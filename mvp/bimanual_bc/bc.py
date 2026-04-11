@@ -88,6 +88,8 @@ def test_epoch(cfg, test_loader, model, meter, cur_epoch):
         _act_dim = pi_act.shape[-1]
         state_mask = mod_mask[:, :, :-_act_dim]
         action_mask = mod_mask[:, :, -_act_dim:]
+        if not getattr(cfg.data, 'use_proprio', True):
+            state_mask = torch.zeros_like(state_mask)
         mask_each_mod = [prompt_mask] + img_masks + [state_mask]
 
         # model feedforward
@@ -196,6 +198,9 @@ def train_epoch(cfg, train_loader, model, optimizer, meter, cur_epoch):
         _act_dim = pi_act.shape[-1]
         state_mask = mod_mask[:, :, :-_act_dim]
         action_mask = mod_mask[:, :, -_act_dim:]
+        # Zero out proprio mask if use_proprio is False
+        if not getattr(cfg.data, 'use_proprio', True):
+            state_mask = torch.zeros_like(state_mask)
         mask_each_mod = [prompt_mask] + img_masks + [state_mask]
 
         # model feedforward
@@ -276,6 +281,8 @@ def train(cfg):
             prompt_text=getattr(cfg.data, 'prompt_text', 'pour the sugar'),
             prompt_embedding=getattr(cfg.data, 'prompt_embedding', None),
             prompt_embedding_path=getattr(cfg.data, 'prompt_embedding_path', None),
+            action_type=getattr(cfg.data, 'action_type', 'delta_eef'),
+            action_stats_path=getattr(cfg.data, 'action_stats_path', None),
         )
     else:
         train_dataset = Bimanual_Dataset(
@@ -344,6 +351,8 @@ def train(cfg):
                 prompt_text=getattr(cfg.data, 'prompt_text', 'pour the sugar'),
                 prompt_embedding=getattr(cfg.data, 'prompt_embedding', None),
                 prompt_embedding_path=getattr(cfg.data, 'prompt_embedding_path', None),
+                action_type=getattr(cfg.data, 'action_type', 'delta_eef'),
+                action_stats_path=getattr(cfg.data, 'action_stats_path', None),
             )
         else:
             test_dataset = Bimanual_Dataset(

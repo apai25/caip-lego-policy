@@ -12,7 +12,15 @@ data:
   prompt_text: "pour the sugar"
   prompt_embedding_path: "configs/bimanual_bc/bkl_prompt_embedding.npy"
 
-  # BKL: 7 arm + 7 arm + 22 hand + 22 hand = 58
+  # Action representation: "delta_eef" (delta xyz+quat + delta hand joints) or "absolute_joints"
+  action_type: "delta_eef"
+  # Action normalization stats (run tools/compute_bkl_action_stats.py first)
+  action_stats_path: null  # set after running compute_bkl_action_stats.py
+
+  # Whether to use proprioceptive state as input
+  use_proprio: True
+
+  # BKL: 7 eef (xyz+quat) + 7 eef + 22 hand + 22 hand = 58
   state_dim: 58
   action_dim: 58
 
@@ -30,7 +38,7 @@ data:
   joint_noise_std_scale: 1.0
   feats_noise_std: 0.0
   noisy_skip: False
-  frame_skip: 0
+  frame_skip: 1
   history_repeating: 0
   img_sample_num: -1
   img_downsample: 2
@@ -97,7 +105,7 @@ test:
   freq: 20
 
 wandb:
-  name: bkl_pour-sugar_vitb-mae_skip0_pred1_obs16_nonoise_abspos_actonly
+  name: bkl_pour-sugar_vitb-mae_skip1_pred1_obs16_nonoise_delta-eef_actonly
   project: mvp-generalize
   mode: online
 

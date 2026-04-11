@@ -35,44 +35,75 @@ from mvp.bimanual_bc.actor import ActorTransformerConcat_Bimanual, \
     ActorTransformerConcatAttnPoolingDiffusion_Bimanual
 
 
-# DOF labels for the 58-dim action space
+# DOF labels for the 58-dim action space (delta_eef mode)
 DOF_LABELS = (
-    [f"left_arm_j{i}" for i in range(7)] +
-    [f"right_arm_j{i}" for i in range(7)] +
+    ["left_dx", "left_dy", "left_dz", "left_qx", "left_qy", "left_qz", "left_qw"] +
+    ["right_dx", "right_dy", "right_dz", "right_qx", "right_qy", "right_qz", "right_qw"] +
     [f"left_hand_j{i}" for i in range(22)] +
     [f"right_hand_j{i}" for i in range(22)]
 )
 
 DOF_GROUPS = {
-    "left_arm": (0, 7),
-    "right_arm": (7, 14),
+    "left_arm_eef": (0, 7),
+    "right_arm_eef": (7, 14),
     "left_hand": (14, 36),
     "right_hand": (36, 58),
 }
 
 
-def load_episode_data(episode_dir):
+def load_episode_data(episode_dir, action_type="delta_eef", frame_skip=1):
     """Load state, action, and features from an episode directory."""
+    from mvp.bimanual_bc.dataset import pose_to_xyz_quat
+    from scipy.spatial.transform import Rotation as R
+
     ep_name = os.path.basename(episode_dir)
     h5_path = os.path.join(episode_dir, f"{ep_name}.h5")
     feat_path = os.path.join(episode_dir, "features.h5")
 
     with h5py.File(h5_path, 'r') as f:
-        left_arm_pos = f['left_arm_joint_positions'][:].astype(np.float32)
-        right_arm_pos = f['right_arm_joint_positions'][:].astype(np.float32)
+        left_arm_pose = f['left_arm_current_pose'][:].astype(np.float64)
+        right_arm_pose = f['right_arm_current_pose'][:].astype(np.float64)
         left_hand_pos = f['left_hand_joint_positions'][:].astype(np.float32)
         right_hand_pos = f['right_hand_joint_positions'][:].astype(np.float32)
 
-        left_arm_cmd = f['left_arm_target_dofs'][:].astype(np.float32)
-        right_arm_cmd = f['right_arm_target_dofs'][:].astype(np.float32)
-        left_hand_cmd = f['left_hand_target_joint_positions'][:].astype(np.float32)
-        right_hand_cmd = f['right_hand_target_joint_positions'][:].astype(np.float32)
+        if action_type == "delta_eef":
+            left_arm_target_pose = f['left_arm_target_pose'][:].astype(np.float64)
+            right_arm_target_pose = f['right_arm_target_pose'][:].astype(np.float64)
+            left_hand_cmd = f['left_hand_target_joint_positions'][:].astype(np.float32)
+            right_hand_cmd = f['right_hand_target_joint_positions'][:].astype(np.float32)
+        else:
+            left_arm_jpos = f['left_arm_joint_positions'][:].astype(np.float32)
+            right_arm_jpos = f['right_arm_joint_positions'][:].astype(np.float32)
+            left_arm_cmd = f['left_arm_target_dofs'][:].astype(np.float32)
+            right_arm_cmd = f['right_arm_target_dofs'][:].astype(np.float32)
+            left_hand_cmd = f['left_hand_target_joint_positions'][:].astype(np.float32)
+            right_hand_cmd = f['right_hand_target_joint_positions'][:].astype(np.float32)
 
-    states = np.concatenate([left_arm_pos, right_arm_pos, left_hand_pos, right_hand_pos], axis=1)
-    actions = np.concatenate([left_arm_cmd, right_arm_cmd, left_hand_cmd, right_hand_cmd], axis=1)
+    # State: absolute EEF xyz+quat + hand joints
+    left_eef = pose_to_xyz_quat(left_arm_pose)
+    right_eef = pose_to_xyz_quat(right_arm_pose)
+
+    if action_type == "delta_eef":
+        states = np.concatenate([left_eef, right_eef, left_hand_pos, right_hand_pos], axis=1)
+        # Compute per-timestep ground-truth actions with the given frame_skip
+        T = len(states)
+        actions = np.zeros((T, 58), dtype=np.float32)
+        for k in range(T - 1):
+            t1 = min(k + frame_skip + 1, T - 1)
+            left_rel = np.linalg.inv(left_arm_target_pose[k]) @ left_arm_target_pose[t1]
+            right_rel = np.linalg.inv(right_arm_target_pose[k]) @ right_arm_target_pose[t1]
+            actions[k, :3] = left_rel[:3, 3]
+            actions[k, 3:7] = R.from_matrix(left_rel[:3, :3]).as_quat()
+            actions[k, 7:10] = right_rel[:3, 3]
+            actions[k, 10:14] = R.from_matrix(right_rel[:3, :3]).as_quat()
+            actions[k, 14:36] = left_hand_cmd[t1] - left_hand_cmd[k]
+            actions[k, 36:58] = right_hand_cmd[t1] - right_hand_cmd[k]
+    else:
+        states = np.concatenate([left_arm_jpos, right_arm_jpos, left_hand_pos, right_hand_pos], axis=1)
+        actions = np.concatenate([left_arm_cmd, right_arm_cmd, left_hand_cmd, right_hand_cmd], axis=1)
 
     with h5py.File(feat_path, 'r') as f:
-        features = f['features'][:].astype(np.float32)  # (T, 3, 768)
+        features = f['features'][:].astype(np.float32)
 
     return states, actions, features
 
@@ -243,10 +274,27 @@ def main():
         args.output_dir = os.path.join(os.path.dirname(args.checkpoint), f"eval_{ep_name}")
     os.makedirs(args.output_dir, exist_ok=True)
 
+    # Load action normalization stats
+    action_stats_path = getattr(cfg.data, 'action_stats_path', None)
+    action_mean, action_std = None, None
+    if action_stats_path and os.path.exists(action_stats_path):
+        stats = np.load(action_stats_path)
+        action_mean = stats['mean'].astype(np.float32)
+        action_std = np.maximum(stats['std'].astype(np.float32), 1e-6)
+        print(f"Loaded action stats from {action_stats_path}")
+
     # Load episode data
+    action_type = getattr(cfg.data, 'action_type', 'delta_eef')
+    frame_skip = getattr(cfg.data, 'frame_skip', 1)
     print(f"Loading episode: {args.episode_dir}")
-    states, actions, features = load_episode_data(args.episode_dir)
+    states, actions, features = load_episode_data(args.episode_dir, action_type, frame_skip)
     print(f"  States: {states.shape}, Actions: {actions.shape}, Features: {features.shape}")
+
+    # Normalize GT actions (to match what model was trained on)
+    if action_mean is not None:
+        actions_normed = (actions - action_mean) / action_std
+    else:
+        actions_normed = actions
 
     # Load prompt embedding
     prompt_embedding = np.load(cfg.data.prompt_embedding_path).astype(np.float32)
@@ -262,32 +310,40 @@ def main():
         print(f"  Unexpected keys: {uks}")
     model.cuda()
 
-    # Run prediction
+    # Run prediction (model outputs normalized actions)
     num_steps = cfg.actor.num_steps
     print(f"Running offline eval (num_steps={num_steps}, episode length={len(states)})...")
-    pred_actions, gt_actions, timesteps = run_offline_eval(
-        model, states, actions, features, prompt_embedding, num_steps
+    pred_actions_normed, gt_actions_normed, timesteps = run_offline_eval(
+        model, states, actions_normed, features, prompt_embedding, num_steps
     )
-    print(f"  Predictions: {pred_actions.shape}")
+    print(f"  Predictions: {pred_actions_normed.shape}")
 
-    # Compute per-group L1 errors
-    l1_errors = np.abs(pred_actions - gt_actions).mean(axis=0)
+    # Unnormalize for plotting
+    if action_mean is not None:
+        pred_actions = pred_actions_normed * action_std + action_mean
+        gt_actions_plot = gt_actions_normed * action_std + action_mean
+    else:
+        pred_actions = pred_actions_normed
+        gt_actions_plot = gt_actions_normed
+
+    # Compute per-group L1 errors (in unnormalized space)
+    l1_errors = np.abs(pred_actions - gt_actions_plot).mean(axis=0)
     print("\nMean L1 error per DOF group:")
     for group_name, (start, end) in DOF_GROUPS.items():
         group_error = l1_errors[start:end].mean()
         print(f"  {group_name}: {group_error:.6f}")
     print(f"  overall: {l1_errors.mean():.6f}")
 
-    # Generate plots
+    # Generate plots (unnormalized)
     print(f"\nSaving plots to: {args.output_dir}")
     for group_name, (start, end) in DOF_GROUPS.items():
-        plot_dof_group(timesteps, pred_actions, gt_actions, group_name, start, end, args.output_dir)
+        plot_dof_group(timesteps, pred_actions, gt_actions_plot, group_name, start, end, args.output_dir)
 
     # Also save raw data for further analysis
     np.savez(
         os.path.join(args.output_dir, "eval_data.npz"),
         pred_actions=pred_actions,
-        gt_actions=gt_actions,
+        gt_actions=gt_actions_plot,
         timesteps=timesteps,
         l1_errors=l1_errors,
     )
