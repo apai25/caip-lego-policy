@@ -143,90 +143,98 @@ def build_model(cfg):
 
 
 @torch.no_grad()
-def run_offline_eval(model, states, actions, features, prompt_embedding, cfg):
-    """Run sliding-window prediction across an entire episode.
-
-    The model predicts num_pred future steps per input. We use the first
-    predicted step (next-step prediction) for comparison with GT.
+def run_offline_eval(model, states, actions, features, prompt_embedding, cfg, batch_size=256):
+    """Run batched sliding-window prediction across an entire episode.
 
     Returns:
         pred_actions: (T-1, action_dim) first-step predicted actions
         gt_actions: (T-1, action_dim) ground-truth actions
         timesteps: (T-1,) timestep indices
     """
+    from mvp.bimanual_bc.dataset import BKL_Dataset
+
     model.eval()
     T = len(states)
     num_cams = features.shape[1]
     num_steps = cfg.actor.num_steps
     n_heads = cfg.transformer_concat.num_heads
+    action_dim = actions.shape[1]
 
-    prompt = torch.tensor(prompt_embedding, dtype=torch.float32).cuda()
-
-    pred_actions = []
-    gt_actions = []
-    timesteps = []
-
+    # Precompute all windows: for num_steps=1, each window is just one frame
+    # For num_steps>1, pad from the left with the first frame
+    all_states = []   # (T-1, num_steps, state_dim)
+    all_feats = []    # (T-1, num_steps, num_cams, feat_dim)
     for t in range(T - 1):
-        # State: just current frame (num_steps=1 typical)
         start = max(0, t - num_steps + 1)
         end = t + 1
         pad_len = num_steps - (end - start)
-
-        state_window = torch.tensor(states[start:end], dtype=torch.float32).cuda()
-        feat_window = torch.tensor(features[start:end], dtype=torch.float32).cuda()
-
-        # Pad from the left if needed
+        s = states[start:end]
+        f = features[start:end]
         if pad_len > 0:
-            state_window = torch.cat([state_window[:1].repeat(pad_len, 1), state_window], dim=0)
-            feat_window = torch.cat([feat_window[:1].repeat(pad_len, 1, 1), feat_window], dim=0)
+            s = np.concatenate([np.tile(s[0:1], (pad_len, 1)), s], axis=0)
+            f = np.concatenate([np.tile(f[0:1], (pad_len, 1, 1)), f], axis=0)
+        all_states.append(s)
+        all_feats.append(f)
+    all_states = np.stack(all_states)  # (T-1, num_steps, state_dim)
+    all_feats = np.stack(all_feats)    # (T-1, num_steps, num_cams, feat_dim)
 
-        # Add batch dimension
-        prompt_window = prompt.unsqueeze(0).repeat(num_steps, 1).unsqueeze(0)  # (1, L, 768)
-        state_window = state_window.unsqueeze(0)   # (1, L, state_dim)
-        im_windows = [feat_window[:, c, :].unsqueeze(0) for c in range(num_cams)]
+    # Precompute masks (same for every sample)
+    side = getattr(cfg.data, 'side', 'both')
+    cam_keys = [f"feat_{c}" for c in cfg.data.cams]
+    excluded_cam = None
+    if side != 'both':
+        excluded_cam = f"feat_{BKL_Dataset.SIDE_EXCLUDED_CAMS[side]}"
+    cam_visible = [0.0 if cam_keys[c] == excluded_cam else 1.0 for c in range(num_cams)]
 
-        obs_each_mod = [prompt_window] + im_windows + [state_window]
+    use_proprio = getattr(cfg.data, 'use_proprio', True)
+    state_mask_vec = np.ones(states.shape[1], dtype=np.float32)
+    if not use_proprio:
+        state_mask_vec[:] = 0.0
+    elif side != 'both':
+        other = 'left' if side == 'right' else 'right'
+        for idx in BKL_Dataset.SIDE_INDICES[other]:
+            state_mask_vec[idx] = 0.0
 
-        # Build masks matching training: respect use_proprio, side, and cam visibility
-        prompt_mask = torch.ones_like(prompt_window)
-        img_masks = []
-        side = getattr(cfg.data, 'side', 'both')
-        excluded_cam = None
-        if side != 'both':
-            from mvp.bimanual_bc.dataset import BKL_Dataset
-            excluded_cam = f"feat_{BKL_Dataset.SIDE_EXCLUDED_CAMS[side]}"
-        cam_keys = [f"feat_{c}" for c in cfg.data.cams]
-        for c_idx in range(num_cams):
-            m = torch.ones_like(im_windows[c_idx])
-            if cam_keys[c_idx] == excluded_cam:
-                m = torch.zeros_like(m)
-            img_masks.append(m)
-        state_mask = torch.ones_like(state_window)
-        if not getattr(cfg.data, 'use_proprio', True):
-            state_mask = torch.zeros_like(state_mask)
-        elif side != 'both':
-            from mvp.bimanual_bc.dataset import BKL_Dataset
-            other = 'left' if side == 'right' else 'right'
-            for idx in BKL_Dataset.SIDE_INDICES[other]:
-                state_mask[:, :, idx] = 0.0
-        mask_each_mod = [prompt_mask] + img_masks + [state_mask]
+    # Causal attention mask (shared across batch)
+    L = num_steps
+    causal_mask = torch.triu(torch.ones(L, L, device='cuda'), diagonal=1).bool()
+    att_mask = causal_mask.unsqueeze(0).repeat(n_heads, 1, 1)
 
-        # Causal attention mask
-        L = num_steps
-        causal_mask = torch.triu(torch.ones(L, L, device='cuda'), diagonal=1).bool()
-        att_mask = causal_mask.unsqueeze(0).repeat(n_heads, 1, 1)
+    prompt_t = torch.tensor(prompt_embedding, dtype=torch.float32).cuda()
+    prompt_window = prompt_t.unsqueeze(0).repeat(num_steps, 1)  # (L, 768)
+    state_mask_t = torch.tensor(state_mask_vec, dtype=torch.float32).cuda()
 
-        preds = model(obs_each_mod=obs_each_mod, mask_each_mod=mask_each_mod, attn_mask=att_mask)
+    # Run batched inference
+    N = T - 1
+    pred_actions = np.zeros((N, action_dim), dtype=np.float32)
 
-        # preds[-1] is action predictions: (1, num_pred, action_dim)
-        # Take first predicted step (next-step action)
-        pred_action = preds[-1][0, 0].cpu().numpy()
+    for b_start in range(0, N, batch_size):
+        b_end = min(b_start + batch_size, N)
+        B = b_end - b_start
 
-        pred_actions.append(pred_action)
-        gt_actions.append(actions[t])
-        timesteps.append(t)
+        states_b = torch.tensor(all_states[b_start:b_end], dtype=torch.float32).cuda()  # (B, L, state_dim)
+        feats_b = torch.tensor(all_feats[b_start:b_end], dtype=torch.float32).cuda()    # (B, L, num_cams, feat_dim)
 
-    return np.array(pred_actions), np.array(gt_actions), np.array(timesteps)
+        prompt_b = prompt_window.unsqueeze(0).expand(B, -1, -1)   # (B, L, 768)
+        im_list = [feats_b[:, :, c, :] for c in range(num_cams)]  # list of (B, L, feat_dim)
+
+        obs_each_mod = [prompt_b] + im_list + [states_b]
+
+        # Masks
+        prompt_mask = torch.ones_like(prompt_b)
+        img_masks = [torch.full_like(im, cam_visible[c]) for c, im in enumerate(im_list)]
+        s_mask = state_mask_t.unsqueeze(0).unsqueeze(0).expand(B, L, -1)
+        mask_each_mod = [prompt_mask] + img_masks + [s_mask]
+
+        # Expand att_mask for batch (n_heads -> B * n_heads)
+        att_mask_b = att_mask.unsqueeze(0).expand(B, -1, -1, -1).reshape(B * n_heads, L, L)
+
+        preds = model(obs_each_mod=obs_each_mod, mask_each_mod=mask_each_mod, attn_mask=att_mask_b)
+        pred_actions[b_start:b_end] = preds[-1][:, 0].cpu().numpy()
+
+    gt_actions = actions[:N]
+    timesteps = np.arange(N)
+    return pred_actions, gt_actions, timesteps
 
 
 def plot_dof_group(timesteps, pred_actions, gt_actions, group_name, dof_start, dof_end, output_dir):
@@ -268,6 +276,7 @@ def main():
                         help="Path to training log directory (contains train_meta.pt and model checkpoints)")
     parser.add_argument("--epoch", type=int, default=None,
                         help="Checkpoint epoch to load (default: latest)")
+    parser.add_argument("--batch-size", type=int, default=256, help="Batch size for inference")
     parser.add_argument("--output-dir", default=None,
                         help="Directory to save plots (default: log-dir/eval_<episode>)")
     args = parser.parse_args()
@@ -328,7 +337,7 @@ def main():
     # Run prediction (model outputs normalized actions)
     print(f"Running offline eval (num_steps={cfg.actor.num_steps}, num_pred={cfg.actor.num_pred}, episode length={len(states)})...")
     pred_actions_normed, gt_actions_normed, timesteps = run_offline_eval(
-        model, states, actions_normed, features, prompt_embedding, cfg
+        model, states, actions_normed, features, prompt_embedding, cfg, batch_size=args.batch_size
     )
     print(f"  Predictions: {pred_actions_normed.shape}")
 
