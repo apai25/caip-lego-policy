@@ -16,10 +16,10 @@ data:
   action_stats_path: /mnt/amlfs-02/shared/human_egocentric/dniu/datasets/caip_proc/pour_sugar/action_stats_delta_eef_skip1.npz
 
   # Proprioceptive noise stats (run tools/compute_bkl_noise_stats.py first)
-  noise_stats_path: null
+  noise_stats_path: /mnt/amlfs-02/shared/human_egocentric/dniu/datasets/caip_proc/pour_sugar/noise_stats.npz
 
   # Whether to use proprioceptive state as input
-  use_proprio: False
+  use_proprio: True
 
   # Which side to train on: "both", "left", or "right"
   # Controls both proprio masking (unused side's state is masked) and
@@ -104,7 +104,7 @@ test:
   freq: 20
 
 wandb:
-  name: bkl_pour-sugar_vitb-mae_skip1_pred16_obs1_nonoise_bodyframe-6drot_actonly_noproprio_right
+  name: bkl_pour-sugar_vitb-mae_skip1_pred16_obs1_noise1x_bodyframe-6drot_actonly_proprio_right
   project: mvp-generalize
   mode: online
 

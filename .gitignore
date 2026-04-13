@@ -59,6 +59,9 @@ yarn-error.log*
 # Bimanual
 bimanual/img/
 
+# Claude Code
+.claude/
+
 # Other
 logs/
 scratch*

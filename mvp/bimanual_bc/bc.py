@@ -272,7 +272,6 @@ def train(cfg):
             cams=cfg.data.cams,
             noisy_skip=cfg.data.noisy_skip,
             frame_skip=cfg.data.frame_skip,
-            joint_noise_mean=cfg.data.joint_noise_mean,
             joint_noise_std=cfg.data.joint_noise_std,
             joint_noise_std_scale=cfg.data.joint_noise_std_scale,
             feats_noise_std=cfg.data.feats_noise_std,
@@ -281,8 +280,10 @@ def train(cfg):
             prompt_text=getattr(cfg.data, 'prompt_text', 'pour the sugar'),
             prompt_embedding=getattr(cfg.data, 'prompt_embedding', None),
             prompt_embedding_path=getattr(cfg.data, 'prompt_embedding_path', None),
-            action_type=getattr(cfg.data, 'action_type', 'delta_eef'),
+
             action_stats_path=getattr(cfg.data, 'action_stats_path', None),
+            noise_stats_path=getattr(cfg.data, 'noise_stats_path', None),
+            side=getattr(cfg.data, 'side', 'both'),
         )
     else:
         train_dataset = Bimanual_Dataset(
@@ -327,7 +328,6 @@ def train(cfg):
     if cfg.data.num_test > 0:
         random.seed(cfg.seed)
         if dataset_type == 'bkl':
-            state_dim = BKL_Dataset.STATE_DIM
             test_dataset = BKL_Dataset(
                 features=cfg.data.features,
                 demo_root=cfg.data.demo_root,
@@ -342,8 +342,7 @@ def train(cfg):
                 cams=cfg.data.cams,
                 noisy_skip=cfg.data.noisy_skip,
                 frame_skip=cfg.data.frame_skip,
-                joint_noise_mean=[0.] * state_dim,
-                joint_noise_std=[0.] * state_dim,
+                joint_noise_std=0.0,
                 joint_noise_std_scale=cfg.data.joint_noise_std_scale,
                 feats_noise_std=0.0,
                 history_repeating=cfg.data.history_repeating,
@@ -351,8 +350,9 @@ def train(cfg):
                 prompt_text=getattr(cfg.data, 'prompt_text', 'pour the sugar'),
                 prompt_embedding=getattr(cfg.data, 'prompt_embedding', None),
                 prompt_embedding_path=getattr(cfg.data, 'prompt_embedding_path', None),
-                action_type=getattr(cfg.data, 'action_type', 'delta_eef'),
+    
                 action_stats_path=getattr(cfg.data, 'action_stats_path', None),
+                side=getattr(cfg.data, 'side', 'both'),
             )
         else:
             test_dataset = Bimanual_Dataset(

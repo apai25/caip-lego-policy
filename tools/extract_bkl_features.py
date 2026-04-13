@@ -78,14 +78,13 @@ def extract_features(model, frames, im_size, batch_size=64, mode='mean'):
 
 def process_episode(model, ep_dir, cams, im_size, batch_size, mode, fp16):
     """Process a single episode: decode videos, extract features, save to HDF5."""
-    ep_name = os.path.basename(ep_dir)
     output_path = os.path.join(ep_dir, 'features.h5')
 
     # Skip if already processed
     if os.path.exists(output_path):
         return True
 
-    # Verify H5 exists to get expected timestep count
+    ep_name = os.path.basename(ep_dir)
     h5_path = os.path.join(ep_dir, f"{ep_name}.h5")
     if not os.path.exists(h5_path):
         print(f"Warning: skipping {ep_dir}, no {ep_name}.h5 found")

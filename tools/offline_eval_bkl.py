@@ -35,26 +35,25 @@ from mvp.bimanual_bc.actor import ActorTransformerConcat_Bimanual, \
     ActorTransformerConcatAttnPoolingDiffusion_Bimanual
 
 
-# DOF labels for the 58-dim action space (delta_eef mode)
+# DOF labels for the 62-dim action space (body-frame delta_eef + 6D rotation)
 DOF_LABELS = (
-    ["left_dx", "left_dy", "left_dz", "left_qx", "left_qy", "left_qz", "left_qw"] +
-    ["right_dx", "right_dy", "right_dz", "right_qx", "right_qy", "right_qz", "right_qw"] +
+    ["left_dx", "left_dy", "left_dz"] + [f"left_r6d_{i}" for i in range(6)] +
+    ["right_dx", "right_dy", "right_dz"] + [f"right_r6d_{i}" for i in range(6)] +
     [f"left_hand_j{i}" for i in range(22)] +
     [f"right_hand_j{i}" for i in range(22)]
 )
 
 DOF_GROUPS = {
-    "left_arm_eef": (0, 7),
-    "right_arm_eef": (7, 14),
-    "left_hand": (14, 36),
-    "right_hand": (36, 58),
+    "left_arm_eef": (0, 9),
+    "right_arm_eef": (9, 18),
+    "left_hand": (18, 40),
+    "right_hand": (40, 62),
 }
 
 
-def load_episode_data(episode_dir, action_type="delta_eef", frame_skip=1):
+def load_episode_data(episode_dir, frame_skip=1):
     """Load state, action, and features from an episode directory."""
-    from mvp.bimanual_bc.dataset import pose_to_xyz_quat
-    from scipy.spatial.transform import Rotation as R
+    from mvp.bimanual_bc.dataset import pose_to_xyz_rot6d
 
     ep_name = os.path.basename(episode_dir)
     h5_path = os.path.join(episode_dir, f"{ep_name}.h5")
@@ -65,42 +64,34 @@ def load_episode_data(episode_dir, action_type="delta_eef", frame_skip=1):
         right_arm_pose = f['right_arm_current_pose'][:].astype(np.float64)
         left_hand_pos = f['left_hand_joint_positions'][:].astype(np.float32)
         right_hand_pos = f['right_hand_joint_positions'][:].astype(np.float32)
+        left_arm_target_pose = f['left_arm_target_pose'][:].astype(np.float64)
+        right_arm_target_pose = f['right_arm_target_pose'][:].astype(np.float64)
+        left_hand_cmd = f['left_hand_target_joint_positions'][:].astype(np.float32)
+        right_hand_cmd = f['right_hand_target_joint_positions'][:].astype(np.float32)
 
-        if action_type == "delta_eef":
-            left_arm_target_pose = f['left_arm_target_pose'][:].astype(np.float64)
-            right_arm_target_pose = f['right_arm_target_pose'][:].astype(np.float64)
-            left_hand_cmd = f['left_hand_target_joint_positions'][:].astype(np.float32)
-            right_hand_cmd = f['right_hand_target_joint_positions'][:].astype(np.float32)
-        else:
-            left_arm_jpos = f['left_arm_joint_positions'][:].astype(np.float32)
-            right_arm_jpos = f['right_arm_joint_positions'][:].astype(np.float32)
-            left_arm_cmd = f['left_arm_target_dofs'][:].astype(np.float32)
-            right_arm_cmd = f['right_arm_target_dofs'][:].astype(np.float32)
-            left_hand_cmd = f['left_hand_target_joint_positions'][:].astype(np.float32)
-            right_hand_cmd = f['right_hand_target_joint_positions'][:].astype(np.float32)
+    # State: absolute EEF xyz+rot6d + hand joints
+    left_eef = pose_to_xyz_rot6d(left_arm_pose)    # (T, 9)
+    right_eef = pose_to_xyz_rot6d(right_arm_pose)  # (T, 9)
+    states = np.concatenate([left_eef, right_eef, left_hand_pos, right_hand_pos], axis=1)  # (T, 62)
 
-    # State: absolute EEF xyz+quat + hand joints
-    left_eef = pose_to_xyz_quat(left_arm_pose)
-    right_eef = pose_to_xyz_quat(right_arm_pose)
-
-    if action_type == "delta_eef":
-        states = np.concatenate([left_eef, right_eef, left_hand_pos, right_hand_pos], axis=1)
-        # Compute per-timestep ground-truth actions with the given frame_skip
-        T = len(states)
-        actions = np.zeros((T, 58), dtype=np.float32)
-        for k in range(T - 1):
-            t1 = min(k + frame_skip + 1, T - 1)
-            left_rel = np.linalg.inv(left_arm_target_pose[k]) @ left_arm_target_pose[t1]
-            right_rel = np.linalg.inv(right_arm_target_pose[k]) @ right_arm_target_pose[t1]
-            actions[k, :3] = left_rel[:3, 3]
-            actions[k, 3:7] = R.from_matrix(left_rel[:3, :3]).as_quat()
-            actions[k, 7:10] = right_rel[:3, 3]
-            actions[k, 10:14] = R.from_matrix(right_rel[:3, :3]).as_quat()
-            actions[k, 14:36] = left_hand_cmd[t1] - left_hand_cmd[k]
-            actions[k, 36:58] = right_hand_cmd[t1] - right_hand_cmd[k]
-    else:
-        states = np.concatenate([left_arm_jpos, right_arm_jpos, left_hand_pos, right_hand_pos], axis=1)
-        actions = np.concatenate([left_arm_cmd, right_arm_cmd, left_hand_cmd, right_hand_cmd], axis=1)
+    # Compute per-timestep body-frame ground-truth actions with 6D rotation
+    T = len(states)
+    actions = np.zeros((T, 62), dtype=np.float32)
+    for k in range(T - 1):
+        t1 = min(k + frame_skip + 1, T - 1)
+        # Left arm: body-frame delta
+        left_R_curr = left_arm_target_pose[k, :3, :3]
+        actions[k, 0:3] = left_R_curr.T @ (left_arm_target_pose[t1, :3, 3] - left_arm_target_pose[k, :3, 3])
+        left_R_delta = left_R_curr.T @ left_arm_target_pose[t1, :3, :3]
+        actions[k, 3:9] = np.concatenate([left_R_delta[:, 0], left_R_delta[:, 1]])
+        # Right arm: body-frame delta
+        right_R_curr = right_arm_target_pose[k, :3, :3]
+        actions[k, 9:12] = right_R_curr.T @ (right_arm_target_pose[t1, :3, 3] - right_arm_target_pose[k, :3, 3])
+        right_R_delta = right_R_curr.T @ right_arm_target_pose[t1, :3, :3]
+        actions[k, 12:18] = np.concatenate([right_R_delta[:, 0], right_R_delta[:, 1]])
+        # Hands
+        actions[k, 18:40] = left_hand_cmd[t1] - left_hand_cmd[k]
+        actions[k, 40:62] = right_hand_cmd[t1] - right_hand_cmd[k]
 
     with h5py.File(feat_path, 'r') as f:
         features = f['features'][:].astype(np.float32)
@@ -284,10 +275,9 @@ def main():
         print(f"Loaded action stats from {action_stats_path}")
 
     # Load episode data
-    action_type = getattr(cfg.data, 'action_type', 'delta_eef')
     frame_skip = getattr(cfg.data, 'frame_skip', 1)
     print(f"Loading episode: {args.episode_dir}")
-    states, actions, features = load_episode_data(args.episode_dir, action_type, frame_skip)
+    states, actions, features = load_episode_data(args.episode_dir, frame_skip)
     print(f"  States: {states.shape}, Actions: {actions.shape}, Features: {features.shape}")
 
     # Normalize GT actions (to match what model was trained on)

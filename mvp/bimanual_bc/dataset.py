@@ -512,30 +512,17 @@ def pose_to_xyz_quat(pose_4x4):
     return np.concatenate([xyz, quat], axis=1).astype(np.float32)  # (T, 7)
 
 
-def compute_delta_eef(target_poses):
-    """Compute delta EEF from (T, 4, 4) target pose matrices.
+def pose_to_xyz_rot6d(pose_4x4):
+    """Convert (T, 4, 4) homogeneous transforms to (T, 9) xyz + 6D rotation.
 
-    delta_pose[t] = inv(target_pose[t]) @ target_pose[t+1]
-    Returns (T, 7): delta xyz + delta quaternion (xyzw). Last row = zeros.
+    6D rotation = first two columns of rotation matrix, concatenated column-major:
+    [r00, r10, r20, r01, r11, r21] where rij = R[i,j].
     """
-    T = target_poses.shape[0]
-    deltas = np.zeros((T, 7), dtype=np.float32)
-    for t in range(T - 1):
-        rel = np.linalg.inv(target_poses[t]) @ target_poses[t + 1]
-        deltas[t, :3] = rel[:3, 3]
-        deltas[t, 3:] = R.from_matrix(rel[:3, :3]).as_quat()
-    return deltas
-
-
-def compute_delta_joints(target_joints):
-    """Compute delta joint positions: delta[t] = target[t+1] - target[t].
-
-    Returns (T, D). Last row = zeros.
-    """
-    T = target_joints.shape[0]
-    deltas = np.zeros_like(target_joints)
-    deltas[:T - 1] = target_joints[1:] - target_joints[:-1]
-    return deltas
+    xyz = pose_4x4[:, :3, 3]                       # (T, 3)
+    col0 = pose_4x4[:, :3, 0]                      # (T, 3) — first column
+    col1 = pose_4x4[:, :3, 1]                      # (T, 3) — second column
+    rot6d = np.concatenate([col0, col1], axis=1)    # (T, 6)
+    return np.concatenate([xyz, rot6d], axis=1).astype(np.float32)  # (T, 9)
 
 
 class BKL_Dataset(torch.utils.data.Dataset):
@@ -546,28 +533,38 @@ class BKL_Dataset(torch.utils.data.Dataset):
       - Pre-extracted vision features in a separate features.h5
       - Camera names: left_wrist, right_wrist, head
 
-    Action types:
-      - "absolute_joints": raw joint positions (7+7+22+22 = 58)
-      - "delta_eef": delta xyz+quat for arms (7+7) + delta joint positions for hands (22+22) = 58
-
-    State: absolute EEF xyz+quat (7+7) + absolute hand joints (22+22) = 58 dims
+    State: absolute EEF xyz+rot6d (9+9) + absolute hand joints (22+22) = 62 dims
+    Action: body-frame delta xyz + 6D rotation + delta hand joints = 62 dims
     """
 
-    STATE_DIM = 58
-    ACTION_DIM = 58
+    STATE_DIM = 62   # xyz(3)+rot6d(6) per arm + hand(22) per hand = 9+9+22+22
+    ACTION_DIM = 62  # same structure, body-frame deltas
+
+    # Side index ranges within the 62-dim state/action vectors.
+    # Used by the `side` parameter to mask out unused dimensions.
+    SIDE_INDICES = {
+        'left':  list(range(0, 9)) + list(range(18, 40)),   # left arm (9) + left hand (22)
+        'right': list(range(9, 18)) + list(range(40, 62)),   # right arm (9) + right hand (22)
+    }
+    # Wrist camera to exclude when training on a single side.
+    SIDE_EXCLUDED_CAMS = {
+        'left':  'right_wrist',
+        'right': 'left_wrist',
+    }
 
     def __init__(
             self, features, demo_root, demo_dirs, inmem,
             start_ind=0, num_demos=1000000,
             im_size=224, cams=["left_wrist", "right_wrist", "head"], num_steps=1, num_pred=1, look_ahead=0,
             noisy_skip=False, frame_skip=0,
-            joint_noise_mean=0.0, joint_noise_std=0.0, joint_noise_std_scale=1.0, feats_noise_std=0.0,
+            joint_noise_std=0.0, joint_noise_std_scale=1.0, feats_noise_std=0.0,
             history_repeating=0.0, img_sample_num=-1,
             prompt_text="pour the sugar", prompt_embedding=None, prompt_embedding_path=None,
             skip_failure=True,
-            action_type="delta_eef",
             action_stats_path=None,
-            **kwargs,  # absorb unused args from old config
+            noise_stats_path=None,
+            side="both",
+            **kwargs,  # absorb unused args (e.g. joint_noise_mean from old configs)
     ):
         # Load prompt embedding from path if provided
         if prompt_embedding is None and prompt_embedding_path is not None:
@@ -585,7 +582,13 @@ class BKL_Dataset(torch.utils.data.Dataset):
             self._action_mean = None
             self._action_std = None
 
-        self._action_type = action_type
+        # Load proprioceptive noise stats (56D: axis-angle rotation errors)
+        # Always zero-mean — only std is used for noise injection
+        if noise_stats_path is not None and os.path.exists(noise_stats_path):
+            noise_stats = np.load(noise_stats_path)
+            joint_noise_std = noise_stats['std'].astype(np.float32)
+            print(f"Loaded noise stats from {noise_stats_path} (zero-mean, {len(joint_noise_std)}D)")
+
         self._features = features
         self._demo_root = demo_root
         self._demo_dirs = demo_dirs
@@ -600,8 +603,9 @@ class BKL_Dataset(torch.utils.data.Dataset):
         self._look_ahead = look_ahead
         self._noisy_skip = noisy_skip
         self._frame_skip = frame_skip
-        self._joint_noise_mean = np.zeros(self.STATE_DIM) if isinstance(joint_noise_mean, (int, float)) and joint_noise_mean == 0.0 else np.array(joint_noise_mean)
-        self._joint_noise_std = np.zeros(self.STATE_DIM) if isinstance(joint_noise_std, (int, float)) and joint_noise_std == 0.0 else np.array(joint_noise_std)
+        # Noise is 56D: [left_xyz(3), left_axisangle(3), right_xyz(3), right_axisangle(3), left_hand(22), right_hand(22)]
+        _NOISE_DIM = 56
+        self._joint_noise_std = np.zeros(_NOISE_DIM, dtype=np.float32) if isinstance(joint_noise_std, (int, float)) and joint_noise_std == 0.0 else np.array(joint_noise_std, dtype=np.float32)
         self._joint_noise_std_scale = joint_noise_std_scale
         self._feats_noise_std = feats_noise_std
         self._history_repeating = history_repeating
@@ -609,6 +613,8 @@ class BKL_Dataset(torch.utils.data.Dataset):
         self._prompt_text = prompt_text
         self._prompt_embedding = np.array(prompt_embedding) if prompt_embedding is not None else None
         self._skip_failure = skip_failure
+        assert side in ("both", "left", "right"), f"side must be 'both', 'left', or 'right', got '{side}'"
+        self._side = side
         self._feature_files = []
         self._all_prompts_text = [prompt_text]
         self._dataset = self._construct()
@@ -618,72 +624,63 @@ class BKL_Dataset(torch.utils.data.Dataset):
         """Load state and raw action data from a single episode HDF5 file.
 
         Returns:
-            states: (T, 58) — absolute EEF xyz+quat + absolute hand joints
+            states: (T, 62) — absolute EEF xyz+rot6d + absolute hand joints
             action_data: dict with raw arrays for computing actions with arbitrary frame_skip
         """
         with h5py.File(h5_path, 'r') as f:
-            # State: absolute EEF xyz+quat + hand joints
             left_arm_pose = f['left_arm_current_pose'][:].astype(np.float64)   # (T, 4, 4)
             right_arm_pose = f['right_arm_current_pose'][:].astype(np.float64) # (T, 4, 4)
             left_hand_pos = f['left_hand_joint_positions'][:].astype(np.float32)  # (T, 22)
             right_hand_pos = f['right_hand_joint_positions'][:].astype(np.float32) # (T, 22)
+            left_arm_target_pose = f['left_arm_target_pose'][:].astype(np.float64)   # (T, 4, 4)
+            right_arm_target_pose = f['right_arm_target_pose'][:].astype(np.float64) # (T, 4, 4)
+            left_hand_cmd = f['left_hand_target_joint_positions'][:].astype(np.float32)  # (T, 22)
+            right_hand_cmd = f['right_hand_target_joint_positions'][:].astype(np.float32) # (T, 22)
 
-            if self._action_type == "delta_eef":
-                left_arm_target_pose = f['left_arm_target_pose'][:].astype(np.float64)   # (T, 4, 4)
-                right_arm_target_pose = f['right_arm_target_pose'][:].astype(np.float64) # (T, 4, 4)
-                left_hand_cmd = f['left_hand_target_joint_positions'][:].astype(np.float32)  # (T, 22)
-                right_hand_cmd = f['right_hand_target_joint_positions'][:].astype(np.float32) # (T, 22)
-            else:
-                left_arm_jpos = f['left_arm_joint_positions'][:].astype(np.float32)
-                right_arm_jpos = f['right_arm_joint_positions'][:].astype(np.float32)
-                left_arm_cmd = f['left_arm_target_dofs'][:].astype(np.float32)
-                right_arm_cmd = f['right_arm_target_dofs'][:].astype(np.float32)
-                left_hand_cmd = f['left_hand_target_joint_positions'][:].astype(np.float32)
-                right_hand_cmd = f['right_hand_target_joint_positions'][:].astype(np.float32)
+        # State: absolute EEF xyz+rot6d + absolute hand joints
+        left_eef = pose_to_xyz_rot6d(left_arm_pose)    # (T, 9)
+        right_eef = pose_to_xyz_rot6d(right_arm_pose)  # (T, 9)
+        states = np.concatenate([left_eef, right_eef, left_hand_pos, right_hand_pos], axis=1)  # (T, 62)
 
-        # State: absolute EEF xyz+quat + absolute hand joints
-        left_eef = pose_to_xyz_quat(left_arm_pose)    # (T, 7)
-        right_eef = pose_to_xyz_quat(right_arm_pose)  # (T, 7)
-        states = np.concatenate([left_eef, right_eef, left_hand_pos, right_hand_pos], axis=1)  # (T, 58)
-
-        if self._action_type == "delta_eef":
-            action_data = {
-                'left_arm_target_pose': left_arm_target_pose,
-                'right_arm_target_pose': right_arm_target_pose,
-                'left_hand_cmd': left_hand_cmd,
-                'right_hand_cmd': right_hand_cmd,
-            }
-        else:
-            # For absolute_joints, state is joint-level
-            states = np.concatenate([left_arm_jpos, right_arm_jpos, left_hand_pos, right_hand_pos], axis=1)
-            action_data = {
-                'actions': np.concatenate([left_arm_cmd, right_arm_cmd, left_hand_cmd, right_hand_cmd], axis=1),
-            }
+        action_data = {
+            'left_arm_target_pose': left_arm_target_pose,
+            'right_arm_target_pose': right_arm_target_pose,
+            'left_hand_cmd': left_hand_cmd,
+            'right_hand_cmd': right_hand_cmd,
+        }
 
         return states, action_data
 
     def _compute_action(self, action_data, k, t1):
-        """Compute the action for a (k, t1) pair.
+        """Compute body-frame delta action from target[k] to target[t1].
 
-        For delta_eef: computes delta from target[k] to target[t1].
-        For absolute_joints: returns actions[t1] directly.
+        delta_xyz = R_curr^T @ (t_target - t_curr)
+        R_delta = R_curr^T @ R_target → first 2 columns (6D)
+        Returns (62,): [left_xyz(3), left_rot6d(6), right_xyz(3), right_rot6d(6),
+                        left_hand(22), right_hand(22)]
         """
-        if self._action_type == "delta_eef":
-            # Arm: delta EEF from target_pose[k] to target_pose[t1]
-            left_rel = np.linalg.inv(action_data['left_arm_target_pose'][k]) @ action_data['left_arm_target_pose'][t1]
-            right_rel = np.linalg.inv(action_data['right_arm_target_pose'][k]) @ action_data['right_arm_target_pose'][t1]
-            left_delta_xyz = left_rel[:3, 3].astype(np.float32)
-            left_delta_quat = R.from_matrix(left_rel[:3, :3]).as_quat().astype(np.float32)
-            right_delta_xyz = right_rel[:3, 3].astype(np.float32)
-            right_delta_quat = R.from_matrix(right_rel[:3, :3]).as_quat().astype(np.float32)
-            # Hands: delta joint positions from cmd[k] to cmd[t1]
-            left_hand_delta = (action_data['left_hand_cmd'][t1] - action_data['left_hand_cmd'][k]).astype(np.float32)
-            right_hand_delta = (action_data['right_hand_cmd'][t1] - action_data['right_hand_cmd'][k]).astype(np.float32)
-            return np.concatenate([left_delta_xyz, left_delta_quat,
-                                   right_delta_xyz, right_delta_quat,
-                                   left_hand_delta, right_hand_delta])  # (58,)
-        else:
-            return action_data['actions'][t1]
+        # Left arm: body-frame delta
+        left_curr = action_data['left_arm_target_pose'][k]
+        left_tgt = action_data['left_arm_target_pose'][t1]
+        left_R_curr = left_curr[:3, :3]
+        left_delta_xyz = (left_R_curr.T @ (left_tgt[:3, 3] - left_curr[:3, 3])).astype(np.float32)
+        left_R_delta = left_R_curr.T @ left_tgt[:3, :3]
+        left_delta_rot6d = np.concatenate([left_R_delta[:, 0], left_R_delta[:, 1]]).astype(np.float32)
+
+        # Right arm: body-frame delta
+        right_curr = action_data['right_arm_target_pose'][k]
+        right_tgt = action_data['right_arm_target_pose'][t1]
+        right_R_curr = right_curr[:3, :3]
+        right_delta_xyz = (right_R_curr.T @ (right_tgt[:3, 3] - right_curr[:3, 3])).astype(np.float32)
+        right_R_delta = right_R_curr.T @ right_tgt[:3, :3]
+        right_delta_rot6d = np.concatenate([right_R_delta[:, 0], right_R_delta[:, 1]]).astype(np.float32)
+
+        # Hands: delta joint positions
+        left_hand_delta = (action_data['left_hand_cmd'][t1] - action_data['left_hand_cmd'][k]).astype(np.float32)
+        right_hand_delta = (action_data['right_hand_cmd'][t1] - action_data['right_hand_cmd'][k]).astype(np.float32)
+        return np.concatenate([left_delta_xyz, left_delta_rot6d,
+                               right_delta_xyz, right_delta_rot6d,
+                               left_hand_delta, right_hand_delta])  # (62,)
 
     def _construct(self):
         print("Loading BKL demos from: {}".format(self._demo_root))
@@ -727,6 +724,9 @@ class BKL_Dataset(torch.utils.data.Dataset):
             self._feature_files.append(feature_file)
 
             visible_cam_keys = self._cam_keys
+            if self._side in self.SIDE_EXCLUDED_CAMS:
+                excluded = f"feat_{self.SIDE_EXCLUDED_CAMS[self._side]}"
+                visible_cam_keys = [k for k in visible_cam_keys if k != excluded]
 
             for k in range(T - 1):
                 frame_skip = np.random.randint(self._frame_skip + 1) if self._noisy_skip else self._frame_skip
@@ -740,6 +740,12 @@ class BKL_Dataset(torch.utils.data.Dataset):
                     act_t = (act_t - self._action_mean) / self._action_std
 
                 mod_mask = np.ones(self.STATE_DIM + self.ACTION_DIM, dtype=np.float32)
+                if self._side != "both":
+                    # Zero out the unused side in both state and action portions
+                    other = "left" if self._side == "right" else "right"
+                    for idx in self.SIDE_INDICES[other]:
+                        mod_mask[idx] = 0.0                       # state portion
+                        mod_mask[self.STATE_DIM + idx] = 0.0      # action portion
 
                 element = {
                     "demo_ind": i,
@@ -775,10 +781,47 @@ class BKL_Dataset(torch.utils.data.Dataset):
         return dataset
 
     def process_state(self, state):
-        noise = np.random.normal(self._joint_noise_mean, self._joint_noise_std * self._joint_noise_std_scale).astype(
-            np.float32)
+        """Add noise to proprioceptive state (62D).
+
+        Noise stats are 56D: [left_xyz(3), left_axisangle(3), right_xyz(3),
+        right_axisangle(3), left_hand(22), right_hand(22)].
+
+        - Translation/hand joints: uniform noise in [-std*scale, +std*scale]
+        - Rotation: axis-angle perturbation → rotation matrix → applied to 6D cols
+        """
+        std = self._joint_noise_std * self._joint_noise_std_scale
+        if std.sum() == 0:
+            return state
         state = state.copy()
-        state += noise
+
+        # Left arm: xyz uniform noise
+        state[0:3] += np.random.uniform(-std[0:3], std[0:3]).astype(np.float32)
+        # Left arm: rotation noise via axis-angle perturbation
+        left_aa = np.random.uniform(-std[3:6], std[3:6])
+        if np.linalg.norm(left_aa) > 1e-8:
+            R_noise = R.from_rotvec(left_aa).as_matrix()
+            col0, col1 = state[3:6].copy(), state[6:9].copy()
+            R_orig = np.column_stack([col0, col1, np.cross(col0, col1)])
+            R_pert = (R_noise @ R_orig).astype(np.float32)
+            state[3:6] = R_pert[:, 0]
+            state[6:9] = R_pert[:, 1]
+
+        # Right arm: xyz uniform noise
+        state[9:12] += np.random.uniform(-std[6:9], std[6:9]).astype(np.float32)
+        # Right arm: rotation noise via axis-angle perturbation
+        right_aa = np.random.uniform(-std[9:12], std[9:12])
+        if np.linalg.norm(right_aa) > 1e-8:
+            R_noise = R.from_rotvec(right_aa).as_matrix()
+            col0, col1 = state[12:15].copy(), state[15:18].copy()
+            R_orig = np.column_stack([col0, col1, np.cross(col0, col1)])
+            R_pert = (R_noise @ R_orig).astype(np.float32)
+            state[12:15] = R_pert[:, 0]
+            state[15:18] = R_pert[:, 1]
+
+        # Hand joints: uniform noise
+        state[18:40] += np.random.uniform(-std[12:34], std[12:34]).astype(np.float32)
+        state[40:62] += np.random.uniform(-std[34:56], std[34:56]).astype(np.float32)
+
         return state
 
     def __getitem__(self, ind):
