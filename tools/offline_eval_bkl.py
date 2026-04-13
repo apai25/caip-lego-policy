@@ -186,7 +186,30 @@ def run_offline_eval(model, states, actions, features, prompt_embedding, cfg):
         im_windows = [feat_window[:, c, :].unsqueeze(0) for c in range(num_cams)]
 
         obs_each_mod = [prompt_window] + im_windows + [state_window]
-        mask_each_mod = [torch.ones_like(m) for m in obs_each_mod]
+
+        # Build masks matching training: respect use_proprio, side, and cam visibility
+        prompt_mask = torch.ones_like(prompt_window)
+        img_masks = []
+        side = getattr(cfg.data, 'side', 'both')
+        excluded_cam = None
+        if side != 'both':
+            from mvp.bimanual_bc.dataset import BKL_Dataset
+            excluded_cam = f"feat_{BKL_Dataset.SIDE_EXCLUDED_CAMS[side]}"
+        cam_keys = [f"feat_{c}" for c in cfg.data.cams]
+        for c_idx in range(num_cams):
+            m = torch.ones_like(im_windows[c_idx])
+            if cam_keys[c_idx] == excluded_cam:
+                m = torch.zeros_like(m)
+            img_masks.append(m)
+        state_mask = torch.ones_like(state_window)
+        if not getattr(cfg.data, 'use_proprio', True):
+            state_mask = torch.zeros_like(state_mask)
+        elif side != 'both':
+            from mvp.bimanual_bc.dataset import BKL_Dataset
+            other = 'left' if side == 'right' else 'right'
+            for idx in BKL_Dataset.SIDE_INDICES[other]:
+                state_mask[:, :, idx] = 0.0
+        mask_each_mod = [prompt_mask] + img_masks + [state_mask]
 
         # Causal attention mask
         L = num_steps
