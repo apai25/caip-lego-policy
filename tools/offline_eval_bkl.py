@@ -100,11 +100,15 @@ def load_episode_data(episode_dir, frame_skip=1):
 
 
 def build_model(cfg):
-    """Build the model from config (same logic as bc.py)."""
+    """Build the model from config (same logic as bc.py).
+
+    cfg can be an OmegaConf object or a plain dict (from train_meta.pt).
+    """
+    cfg = OmegaConf.create(cfg) if isinstance(cfg, dict) else cfg
     prompt_output_dim = [cfg.actor.prompt_dim]
     img_output_dim = [cfg.actor.im_dim for _ in range(len(cfg.data.cams))]
-    state_dim = getattr(cfg.data, 'state_dim', 24)
-    action_dim = getattr(cfg.data, 'action_dim', 24)
+    state_dim = getattr(cfg.data, 'state_dim', 62)
+    action_dim = getattr(cfg.data, 'action_dim', 62)
     state_output_dim = [state_dim]
     action_output_dim = [action_dim]
     output_dims = prompt_output_dim + img_output_dim + state_output_dim + action_output_dim
@@ -139,78 +143,65 @@ def build_model(cfg):
 
 
 @torch.no_grad()
-def run_offline_eval(model, states, actions, features, prompt_embedding, num_steps):
+def run_offline_eval(model, states, actions, features, prompt_embedding, cfg):
     """Run sliding-window prediction across an entire episode.
 
+    The model predicts num_pred future steps per input. We use the first
+    predicted step (next-step prediction) for comparison with GT.
+
     Returns:
-        pred_actions: (T - num_steps, 58) predicted actions
-        gt_actions: (T - num_steps, 58) ground-truth actions
-        timesteps: (T - num_steps,) timestep indices
+        pred_actions: (T-1, action_dim) first-step predicted actions
+        gt_actions: (T-1, action_dim) ground-truth actions
+        timesteps: (T-1,) timestep indices
     """
     model.eval()
     T = len(states)
     num_cams = features.shape[1]
-    feat_dim = features.shape[2]
-    state_dim = states.shape[1]
+    num_steps = cfg.actor.num_steps
+    n_heads = cfg.transformer_concat.num_heads
 
-    # Prepad: repeat first frame num_steps-1 times
-    pad_len = num_steps - 1
-    states_padded = np.concatenate([np.tile(states[0:1], (pad_len, 1)), states], axis=0)
-    features_padded = np.concatenate([np.tile(features[0:1], (pad_len, 1, 1)), features], axis=0)
-
-    prompt = torch.tensor(prompt_embedding, dtype=torch.float32).cuda()  # (768,)
+    prompt = torch.tensor(prompt_embedding, dtype=torch.float32).cuda()
 
     pred_actions = []
     gt_actions = []
     timesteps = []
 
     for t in range(T - 1):
-        # Window: [t, t + num_steps) in padded arrays = timesteps [t - pad_len, t] in original
-        window_start = t  # in padded indexing
-        window_end = t + num_steps
+        # State: just current frame (num_steps=1 typical)
+        start = max(0, t - num_steps + 1)
+        end = t + 1
+        pad_len = num_steps - (end - start)
 
-        # State window: (num_steps, state_dim)
-        state_window = torch.tensor(states_padded[window_start:window_end], dtype=torch.float32).cuda()
+        state_window = torch.tensor(states[start:end], dtype=torch.float32).cuda()
+        feat_window = torch.tensor(features[start:end], dtype=torch.float32).cuda()
 
-        # Feature window: (num_steps, num_cams, feat_dim)
-        feat_window = torch.tensor(features_padded[window_start:window_end], dtype=torch.float32).cuda()
-
-        # Prompt: repeat across timesteps (num_steps, prompt_dim)
-        prompt_window = prompt.unsqueeze(0).repeat(num_steps, 1)
+        # Pad from the left if needed
+        if pad_len > 0:
+            state_window = torch.cat([state_window[:1].repeat(pad_len, 1), state_window], dim=0)
+            feat_window = torch.cat([feat_window[:1].repeat(pad_len, 1, 1), feat_window], dim=0)
 
         # Add batch dimension
-        state_window = state_window.unsqueeze(0)       # (1, T, 58)
-        prompt_window = prompt_window.unsqueeze(0)      # (1, T, 768)
+        prompt_window = prompt.unsqueeze(0).repeat(num_steps, 1).unsqueeze(0)  # (1, L, 768)
+        state_window = state_window.unsqueeze(0)   # (1, L, state_dim)
+        im_windows = [feat_window[:, c, :].unsqueeze(0) for c in range(num_cams)]
 
-        # Split features per camera: list of (1, T, feat_dim)
-        im_windows = [feat_window[:, cam_id, :].unsqueeze(0) for cam_id in range(num_cams)]
-
-        # Build observation
         obs_each_mod = [prompt_window] + im_windows + [state_window]
-
-        # Masks: all ones (everything visible)
         mask_each_mod = [torch.ones_like(m) for m in obs_each_mod]
 
-        # Attention mask: no padding, just causal
-        B = 1
+        # Causal attention mask
         L = num_steps
-        n_heads = 8  # from config
-        att_mask = torch.zeros(B, L, L, device='cuda')
         causal_mask = torch.triu(torch.ones(L, L, device='cuda'), diagonal=1).bool()
-        att_mask = causal_mask.unsqueeze(0).repeat(B * n_heads, 1, 1)
+        att_mask = causal_mask.unsqueeze(0).repeat(n_heads, 1, 1)
 
-        # Forward
         preds = model(obs_each_mod=obs_each_mod, mask_each_mod=mask_each_mod, attn_mask=att_mask)
 
-        # Extract action prediction (last element, shape (1, num_pred, action_dim))
-        pred_action = preds[-1].squeeze(0).squeeze(0).cpu().numpy()  # (58,)
-
-        # Ground truth: action at timestep t+1 (the target the model was trained to predict)
-        gt_action = actions[t + 1]
+        # preds[-1] is action predictions: (1, num_pred, action_dim)
+        # Take first predicted step (next-step action)
+        pred_action = preds[-1][0, 0].cpu().numpy()
 
         pred_actions.append(pred_action)
-        gt_actions.append(gt_action)
-        timesteps.append(t + 1)
+        gt_actions.append(actions[t])
+        timesteps.append(t)
 
     return np.array(pred_actions), np.array(gt_actions), np.array(timesteps)
 
@@ -250,29 +241,40 @@ def plot_dof_group(timesteps, pred_actions, gt_actions, group_name, dof_start, d
 def main():
     parser = argparse.ArgumentParser(description="Offline eval of trained BKL policy")
     parser.add_argument("--episode-dir", required=True, help="Path to episode directory")
-    parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint (.pt)")
-    parser.add_argument("--config-path", default="configs/bimanual_bc/config_bkl.yaml",
-                        help="Path to config YAML")
-    parser.add_argument("--output-dir", default=None, help="Directory to save plots (default: next to checkpoint)")
+    parser.add_argument("--log-dir", required=True,
+                        help="Path to training log directory (contains train_meta.pt and model checkpoints)")
+    parser.add_argument("--epoch", type=int, default=None,
+                        help="Checkpoint epoch to load (default: latest)")
+    parser.add_argument("--output-dir", default=None,
+                        help="Directory to save plots (default: log-dir/eval_<episode>)")
     args = parser.parse_args()
 
-    # Load config
-    cfg = OmegaConf.load(args.config_path)
+    # Load train metadata (config + action stats + noise stats)
+    meta = torch.load(os.path.join(args.log_dir, "train_meta.pt"), map_location='cpu')
+    cfg = OmegaConf.create(meta['cfg'])
+
+    # Find checkpoint
+    if args.epoch is not None:
+        ckpt_path = os.path.join(args.log_dir, f"model_ep{args.epoch:04d}.pt")
+    else:
+        import glob
+        ckpts = sorted(glob.glob(os.path.join(args.log_dir, "model_ep*.pt")))
+        assert ckpts, f"No checkpoints found in {args.log_dir}"
+        ckpt_path = ckpts[-1]
+    print(f"Checkpoint: {ckpt_path}")
+
+    # Action normalization stats from meta
+    action_mean, action_std = None, None
+    if 'action_mean' in meta:
+        action_mean = np.array(meta['action_mean'], dtype=np.float32)
+        action_std = np.maximum(np.array(meta['action_std'], dtype=np.float32), 1e-6)
 
     # Output directory
     if args.output_dir is None:
         ep_name = os.path.basename(args.episode_dir)
-        args.output_dir = os.path.join(os.path.dirname(args.checkpoint), f"eval_{ep_name}")
+        epoch_str = os.path.basename(ckpt_path).replace('.pt', '')
+        args.output_dir = os.path.join(args.log_dir, f"eval_{ep_name}_{epoch_str}")
     os.makedirs(args.output_dir, exist_ok=True)
-
-    # Load action normalization stats
-    action_stats_path = getattr(cfg.data, 'action_stats_path', None)
-    action_mean, action_std = None, None
-    if action_stats_path and os.path.exists(action_stats_path):
-        stats = np.load(action_stats_path)
-        action_mean = stats['mean'].astype(np.float32)
-        action_std = np.maximum(stats['std'].astype(np.float32), 1e-6)
-        print(f"Loaded action stats from {action_stats_path}")
 
     # Load episode data
     frame_skip = getattr(cfg.data, 'frame_skip', 1)
@@ -290,9 +292,9 @@ def main():
     prompt_embedding = np.load(cfg.data.prompt_embedding_path).astype(np.float32)
 
     # Build and load model
-    print(f"Loading model from: {args.checkpoint}")
+    print(f"Loading model from: {ckpt_path}")
     model = build_model(cfg)
-    ckpt = torch.load(args.checkpoint, map_location='cpu')
+    ckpt = torch.load(ckpt_path, map_location='cpu')
     mks, uks = model.load_state_dict(ckpt['model_state'], strict=False)
     if mks:
         print(f"  Missing keys: {mks}")
@@ -301,10 +303,9 @@ def main():
     model.cuda()
 
     # Run prediction (model outputs normalized actions)
-    num_steps = cfg.actor.num_steps
-    print(f"Running offline eval (num_steps={num_steps}, episode length={len(states)})...")
+    print(f"Running offline eval (num_steps={cfg.actor.num_steps}, num_pred={cfg.actor.num_pred}, episode length={len(states)})...")
     pred_actions_normed, gt_actions_normed, timesteps = run_offline_eval(
-        model, states, actions_normed, features, prompt_embedding, num_steps
+        model, states, actions_normed, features, prompt_embedding, cfg
     )
     print(f"  Predictions: {pred_actions_normed.shape}")
 
