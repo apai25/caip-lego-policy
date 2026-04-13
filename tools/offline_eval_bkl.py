@@ -357,10 +357,58 @@ def main():
         print(f"  {group_name}: {group_error:.6f}")
     print(f"  overall: {l1_errors.mean():.6f}")
 
-    # Generate plots (unnormalized)
+    # Generate delta plots
     print(f"\nSaving plots to: {args.output_dir}")
     for group_name, (start, end) in DOF_GROUPS.items():
         plot_dof_group(timesteps, pred_actions, gt_actions_plot, group_name, start, end, args.output_dir)
+
+    # Generate absolute position plots by integrating deltas from GT initial state.
+    # For hand joints (simple additive deltas), cumsum works directly.
+    # For arm EEF, xyz deltas are body-frame so we just show hand joints for now.
+    # Hand joint indices: left [18:40], right [40:62]
+    hand_groups = {
+        "left_hand": (18, 40),
+        "right_hand": (40, 62),
+    }
+    # GT absolute hand positions from the episode states
+    gt_hand_abs = states[:len(timesteps)]  # (N, 62) — states at each eval timestep
+
+    # Integrate predicted deltas: pos[t+1] = pos[t] + delta[t]
+    pred_hand_abs = np.zeros_like(gt_hand_abs)
+    pred_hand_abs[0] = gt_hand_abs[0]  # start from same initial state
+    for t in range(1, len(timesteps)):
+        pred_hand_abs[t] = pred_hand_abs[t - 1].copy()
+        # Integrate hand joints (additive deltas)
+        for start_idx, end_idx in hand_groups.values():
+            pred_hand_abs[t, start_idx:end_idx] = (
+                pred_hand_abs[t - 1, start_idx:end_idx] + pred_actions[t - 1, start_idx:end_idx]
+            )
+
+    # Plot absolute hand positions
+    for group_name, (start, end) in hand_groups.items():
+        n_dofs = end - start
+        cols = min(4, n_dofs)
+        rows = (n_dofs + cols - 1) // cols
+        fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 3 * rows), squeeze=False)
+        fig.suptitle(f"{group_name} — Absolute Position (integrated)", fontsize=14)
+        for i in range(n_dofs):
+            dof_idx = start + i
+            ax = axes[i // cols][i % cols]
+            ax.plot(timesteps, gt_hand_abs[:, dof_idx], label='GT', alpha=0.7, linewidth=0.8)
+            ax.plot(timesteps, pred_hand_abs[:, dof_idx], label='Pred (integrated)', alpha=0.7, linewidth=0.8)
+            ax.set_title(DOF_LABELS[dof_idx], fontsize=9)
+            ax.set_xlabel('timestep', fontsize=8)
+            ax.set_ylabel('position', fontsize=8)
+            ax.tick_params(labelsize=7)
+            if i == 0:
+                ax.legend(fontsize=7)
+        for i in range(n_dofs, rows * cols):
+            axes[i // cols][i % cols].set_visible(False)
+        plt.tight_layout()
+        save_path = os.path.join(args.output_dir, f"{group_name}_absolute.png")
+        plt.savefig(save_path, dpi=150)
+        plt.close()
+        print(f"Saved: {save_path}")
 
     # Also save raw data for further analysis
     np.savez(
