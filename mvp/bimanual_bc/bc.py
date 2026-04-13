@@ -8,6 +8,7 @@ import random
 import statistics
 import time
 import wandb
+from omegaconf import OmegaConf
 
 import torch
 import torch.distributed as dist
@@ -485,6 +486,18 @@ def train(cfg):
         assert cfg.data.num_test > 0, "test-only mode needs data.num_test > 0"
         test_epoch(cfg, test_loader, model, test_meter, 0)
         return
+
+    # Save inference metadata once to the log directory
+    if cfg.num_gpus == 1 or dist.get_rank() == 0:
+        os.makedirs(cfg.logdir, exist_ok=True)
+        meta = {"cfg": OmegaConf.to_container(cfg, resolve=True)}
+        if dataset_type == 'bkl':
+            if train_dataset._action_mean is not None:
+                meta["action_mean"] = train_dataset._action_mean.tolist()
+                meta["action_std"] = train_dataset._action_std.tolist()
+            if train_dataset._joint_noise_std is not None:
+                meta["noise_std"] = train_dataset._joint_noise_std.tolist()
+        torch.save(meta, os.path.join(cfg.logdir, "train_meta.pt"))
 
     # Perform training
     for cur_epoch in range(cfg.train.num_ep):
