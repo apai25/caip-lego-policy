@@ -534,7 +534,7 @@ class BKL_Dataset(torch.utils.data.Dataset):
       - Camera names: left_wrist, right_wrist, head
 
     State: absolute EEF xyz+rot6d (9+9) + absolute hand joints (22+22) = 62 dims
-    Action: body-frame delta xyz + 6D rotation + delta hand joints = 62 dims
+    Action: body-frame delta EEF (xyz+6D rot) + absolute hand target positions = 62 dims
     """
 
     STATE_DIM = 62   # xyz(3)+rot6d(6) per arm + hand(22) per hand = 9+9+22+22

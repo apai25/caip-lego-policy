@@ -315,9 +315,9 @@ def main():
     states, actions, features = load_episode_data(args.episode_dir, frame_skip)
     print(f"  States: {states.shape}, Actions: {actions.shape}, Features: {features.shape}")
 
-    # Normalize GT actions (quantile scaling to [-1, 1])
+    # Normalize GT actions (quantile scaling to [-1, 1], clipped to match training)
     if action_q01 is not None:
-        actions_normed = (actions - action_q01) / action_range * 2 - 1
+        actions_normed = np.clip((actions - action_q01) / action_range * 2 - 1, -1, 1)
     else:
         actions_normed = actions
 
@@ -351,22 +351,26 @@ def main():
         gt_actions_plot = gt_actions_normed
 
     # Compute per-group L1 errors (in unnormalized space)
+    side = getattr(cfg.data, 'side', 'both')
     l1_errors = np.abs(pred_actions - gt_actions_plot).mean(axis=0)
     print("\nMean L1 error per DOF group:")
+    from mvp.bimanual_bc.dataset import BKL_Dataset
+    active_indices = BKL_Dataset.SIDE_INDICES[side] if side != 'both' else list(range(62))
     for group_name, (start, end) in DOF_GROUPS.items():
-        group_error = l1_errors[start:end].mean()
+        group_indices = [i for i in range(start, end) if i in active_indices]
+        if not group_indices:
+            print(f"  {group_name}: -- (masked)")
+            continue
+        group_error = l1_errors[group_indices].mean()
         print(f"  {group_name}: {group_error:.6f}")
-    print(f"  overall: {l1_errors.mean():.6f}")
+    overall = l1_errors[active_indices].mean()
+    print(f"  overall ({side}): {overall:.6f}")
 
     # Generate delta plots
     print(f"\nSaving plots to: {args.output_dir}")
     for group_name, (start, end) in DOF_GROUPS.items():
         plot_dof_group(timesteps, pred_actions, gt_actions_plot, group_name, start, end, args.output_dir)
 
-    # Generate absolute position plots by integrating deltas from GT initial state.
-    # For hand joints (simple additive deltas), cumsum works directly.
-    # For arm EEF, xyz deltas are body-frame so we just show hand joints for now.
-    # Hand joint indices: left [18:40], right [40:62]
     # Hand actions are absolute target positions — plot directly (no integration needed)
     hand_groups = {
         "left_hand": (18, 40),
