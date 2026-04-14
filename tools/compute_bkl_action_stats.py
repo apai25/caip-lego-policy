@@ -109,11 +109,15 @@ def main():
     all_actions = np.array(all_actions)
     mean = all_actions.mean(axis=0)
     std = all_actions.std(axis=0)
+    q01 = np.quantile(all_actions, 0.01, axis=0).astype(np.float32)
+    q99 = np.quantile(all_actions, 0.99, axis=0).astype(np.float32)
 
-    print(f"\nAction stats (shape {mean.shape}):")
+    print(f"\nAction stats (shape {mean.shape}, {len(all_actions)} samples):")
     print(f"  Mean: {mean}")
     print(f"  Std:  {std}")
-    print(f"  Min std: {std.min():.6f}, Max std: {std.max():.6f}")
+    print(f"  q01:  {q01}")
+    print(f"  q99:  {q99}")
+    print(f"  q99-q01 range: min={np.abs(q99-q01).min():.6f}, max={np.abs(q99-q01).max():.6f}")
 
     # Save
     if args.output is None:
@@ -122,7 +126,7 @@ def main():
             f"action_stats_delta_eef_skip{args.frame_skip}.npz"
         )
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    np.savez(args.output, mean=mean, std=std)
+    np.savez(args.output, mean=mean, std=std, q01=q01, q99=q99)
     print(f"\nSaved to: {args.output}")
 
 

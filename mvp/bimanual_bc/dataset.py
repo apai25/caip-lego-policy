@@ -570,17 +570,17 @@ class BKL_Dataset(torch.utils.data.Dataset):
         if prompt_embedding is None and prompt_embedding_path is not None:
             prompt_embedding = np.load(prompt_embedding_path).astype(np.float32)
 
-        # Load action normalization stats
+        # Load action normalization stats (quantile scaling: map [q01, q99] → [-1, 1])
         if action_stats_path is not None and os.path.exists(action_stats_path):
             stats = np.load(action_stats_path)
-            self._action_mean = stats['mean'].astype(np.float32)
-            self._action_std = stats['std'].astype(np.float32)
-            # Clamp std to avoid division by zero
-            self._action_std = np.maximum(self._action_std, 1e-6)
+            self._action_q01 = stats['q01'].astype(np.float32)
+            self._action_q99 = stats['q99'].astype(np.float32)
+            self._action_range = np.maximum(self._action_q99 - self._action_q01, 1e-6)
             print(f"Loaded action stats from {action_stats_path}")
         else:
-            self._action_mean = None
-            self._action_std = None
+            self._action_q01 = None
+            self._action_q99 = None
+            self._action_range = None
 
         # Load proprioceptive noise stats (56D: axis-angle rotation errors)
         # Always zero-mean — only std is used for noise injection
@@ -735,9 +735,10 @@ class BKL_Dataset(torch.utils.data.Dataset):
                 state_t = states[k]
                 act_t = self._compute_action(action_data, k, t1)
 
-                # Normalize action
-                if self._action_mean is not None:
-                    act_t = (act_t - self._action_mean) / self._action_std
+                # Normalize action: map [q01, q99] → [-1, 1], clip outliers
+                if self._action_q01 is not None:
+                    act_t = (act_t - self._action_q01) / self._action_range * 2 - 1
+                    act_t = np.clip(act_t, -1, 1)
 
                 mod_mask = np.ones(self.STATE_DIM + self.ACTION_DIM, dtype=np.float32)
                 if self._side != "both":
@@ -762,9 +763,16 @@ class BKL_Dataset(torch.utils.data.Dataset):
                 }
                 if k == 0:
                     # prepad with stationary states (zero action for delta, state for absolute)
-                    zero_action = np.zeros(self.ACTION_DIM, dtype=np.float32)
-                    if self._action_mean is not None:
-                        zero_action = (zero_action - self._action_mean) / self._action_std
+                    # Identity delta: zero xyz, identity rotation [1,0,0,0,1,0], zero hand
+                    identity_action = np.zeros(self.ACTION_DIM, dtype=np.float32)
+                    identity_action[3:6] = [1, 0, 0]   # left rot col0
+                    identity_action[6:9] = [0, 1, 0]   # left rot col1
+                    identity_action[12:15] = [1, 0, 0]  # right rot col0
+                    identity_action[15:18] = [0, 1, 0]  # right rot col1
+                    if self._action_q01 is not None:
+                        zero_action = np.clip((identity_action - self._action_q01) / self._action_range * 2 - 1, -1, 1)
+                    else:
+                        zero_action = identity_action
                     for _ in range(self._num_steps - self._num_pred + self._look_ahead):
                         e_pad = copy.deepcopy(element)
                         e_pad["action"] = zero_action.copy()

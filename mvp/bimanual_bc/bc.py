@@ -492,9 +492,9 @@ def train(cfg):
         os.makedirs(cfg.logdir, exist_ok=True)
         meta = {"cfg": OmegaConf.to_container(cfg, resolve=True)}
         if dataset_type == 'bkl':
-            if train_dataset._action_mean is not None:
-                meta["action_mean"] = train_dataset._action_mean.tolist()
-                meta["action_std"] = train_dataset._action_std.tolist()
+            if train_dataset._action_q01 is not None:
+                meta["action_q01"] = train_dataset._action_q01.tolist()
+                meta["action_q99"] = train_dataset._action_q99.tolist()
             if train_dataset._joint_noise_std is not None:
                 meta["noise_std"] = train_dataset._joint_noise_std.tolist()
         torch.save(meta, os.path.join(cfg.logdir, "train_meta.pt"))

@@ -295,11 +295,12 @@ def main():
         ckpt_path = ckpts[-1]
     print(f"Checkpoint: {ckpt_path}")
 
-    # Action normalization stats from meta
-    action_mean, action_std = None, None
-    if 'action_mean' in meta:
-        action_mean = np.array(meta['action_mean'], dtype=np.float32)
-        action_std = np.maximum(np.array(meta['action_std'], dtype=np.float32), 1e-6)
+    # Action normalization stats from meta (quantile scaling)
+    action_q01, action_range = None, None
+    if 'action_q01' in meta:
+        action_q01 = np.array(meta['action_q01'], dtype=np.float32)
+        action_q99 = np.array(meta['action_q99'], dtype=np.float32)
+        action_range = np.maximum(action_q99 - action_q01, 1e-6)
 
     # Output directory
     if args.output_dir is None:
@@ -314,9 +315,9 @@ def main():
     states, actions, features = load_episode_data(args.episode_dir, frame_skip)
     print(f"  States: {states.shape}, Actions: {actions.shape}, Features: {features.shape}")
 
-    # Normalize GT actions (to match what model was trained on)
-    if action_mean is not None:
-        actions_normed = (actions - action_mean) / action_std
+    # Normalize GT actions (quantile scaling to [-1, 1])
+    if action_q01 is not None:
+        actions_normed = (actions - action_q01) / action_range * 2 - 1
     else:
         actions_normed = actions
 
@@ -341,10 +342,10 @@ def main():
     )
     print(f"  Predictions: {pred_actions_normed.shape}")
 
-    # Unnormalize for plotting
-    if action_mean is not None:
-        pred_actions = pred_actions_normed * action_std + action_mean
-        gt_actions_plot = gt_actions_normed * action_std + action_mean
+    # Unnormalize for plotting: [-1, 1] → [q01, q99]
+    if action_q01 is not None:
+        pred_actions = (pred_actions_normed + 1) / 2 * action_range + action_q01
+        gt_actions_plot = (gt_actions_normed + 1) / 2 * action_range + action_q01
     else:
         pred_actions = pred_actions_normed
         gt_actions_plot = gt_actions_normed
