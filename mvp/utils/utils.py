@@ -163,8 +163,10 @@ def masked_l1_loss(pred, target, mask):
     if pred.dim() == 4:
         mask = mask.unsqueeze(-2).repeat(1, 1, pred.shape[-2], 1)
     diff = (pred - target).abs()
-    loss_per_dim = (diff * mask).sum(dim=tuple(range(pred.dim() - 1))) / (mask.sum(dim=tuple(range(pred.dim() - 1))) + 1e-6)
-    loss = loss_per_dim.mean()
+    mask_count = mask.sum(dim=tuple(range(pred.dim() - 1)))
+    loss_per_dim = (diff * mask).sum(dim=tuple(range(pred.dim() - 1))) / (mask_count + 1e-6)
+    active_dims = mask_count > 0
+    loss = loss_per_dim[active_dims].mean() if active_dims.any() else loss_per_dim.mean()
     return loss
 
 
