@@ -2,21 +2,21 @@ data:
   dataset_type: bkl
   features: True
   demo_root: /mnt/amlfs-02/shared/human_egocentric/dniu/datasets/caip_proc
-  demo_dirs: ["pick_place_egg"]
+  demo_dirs: ["pour_sugar"]
   inmem: False
   offset: 0
   num_train: 90
   num_test: 10
   im_size: 224
   cams: ["left_wrist", "right_wrist", "head"]
-  prompt_text: "Pick up the egg from the green cup and place it into the yellow cup."
-  prompt_embedding_path: "configs/bimanual_bc/bkl_pick_place_egg_prompt_embedding.npy"
+  prompt_text: "Pour the sugar from the cup into the bowl."
+  prompt_embedding_path: "configs/bimanual_bc/bkl_pour_sugar_prompt_embedding.npy"
 
   # Action normalization stats (run tools/compute_bkl_action_stats.py first)
-  action_stats_path: /mnt/amlfs-02/shared/human_egocentric/dniu/datasets/caip_proc/pick_place_egg/action_stats_delta_eef_skip1.npz
+  action_stats_path: /mnt/amlfs-02/shared/human_egocentric/dniu/datasets/caip_proc/pour_sugar/action_stats_delta_eef_skip1.npz
 
   # Proprioceptive noise stats (run tools/compute_bkl_noise_stats.py first)
-  noise_stats_path: /mnt/amlfs-02/shared/human_egocentric/dniu/datasets/caip_proc/pick_place_egg/noise_stats.npz
+  noise_stats_path: /mnt/amlfs-02/shared/human_egocentric/dniu/datasets/caip_proc/pour_sugar/noise_stats.npz
 
   # Whether to use proprioceptive state as input
   use_proprio: True
@@ -25,7 +25,7 @@ data:
   # Controls both proprio masking (unused side's state is masked) and
   # action loss (unused side's action dims don't contribute to loss).
   # use_proprio=False still overrides: zeros ALL state regardless of side.
-  side: "right"
+  side: "both"
 
   # BKL: 9 eef (xyz+rot6d) + 9 eef + 22 hand + 22 hand = 62
   state_dim: 62
@@ -104,7 +104,7 @@ test:
   freq: 20
 
 wandb:
-  name: bkl_pick-place-egg_vitb-mae_skip1_pred16_obs1_noise1x_bodyframe-6drot_actonly_proprio_right_041426_0916
+  name: bkl_pour-sugar_vitb-mae_skip1_pred16_obs1_noise1x_bodyframe-6drot_actonly_proprio_both_041426
   project: mvp-generalize
   mode: online
 

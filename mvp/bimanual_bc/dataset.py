@@ -424,7 +424,8 @@ class Bimanual_Dataset(torch.utils.data.Dataset):
                 features = hf['features'][
                     unique_step_inds].copy()  # T * 3 * C for mean feature / T * 3 * N * C for all features
             ind_to_feature = {ind: features[i] for i, ind in enumerate(unique_step_inds)}
-            im_data_all = [{cam_key: ind_to_feature[ind][cam_id] for cam_id, cam_key in enumerate(visible_cam_keys)}
+            im_data_all = [{cam_key: ind_to_feature[ind][self._cam_keys.index(cam_key)]
+                           for cam_key in visible_cam_keys}
                            for ind in step_inds]
         # process images
         ims = [[] for cam in self._cams]
@@ -874,7 +875,8 @@ class BKL_Dataset(torch.utils.data.Dataset):
             with h5py.File(feature_file, 'r') as hf:
                 features = hf['features'][unique_step_inds].copy()
             ind_to_feature = {ind: features[i] for i, ind in enumerate(unique_step_inds)}
-            im_data_all = [{cam_key: ind_to_feature[ind][cam_id] for cam_id, cam_key in enumerate(visible_cam_keys)}
+            im_data_all = [{cam_key: ind_to_feature[ind][self._cam_keys.index(cam_key)]
+                           for cam_key in visible_cam_keys}
                            for ind in step_inds]
         else:
             # No features yet — return zeros (for testing data pipeline without vision)

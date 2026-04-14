@@ -2,14 +2,16 @@
 
 """Offline evaluation of a trained BKL policy on a single episode.
 
-Loads model weights and runs sliding-window prediction across an entire episode,
-then generates per-DOF plots comparing predicted vs ground-truth actions.
+Loads model weights and runs sliding-window prediction across an entire episode
+with ACT-style temporal ensemble smoothing, then generates per-DOF plots
+comparing predicted vs ground-truth actions.
 
 Usage:
     python tools/offline_eval_bkl.py \
         --episode-dir /path/to/episode_XXXX \
-        --checkpoint /path/to/model_ep0100.pt \
-        --config-path configs/bimanual_bc/config_bkl.yaml \
+        --log-dir /path/to/training/log \
+        --epoch 200 \
+        --num-exec 4 --smooth-lambda 0.1 \
         --output-dir /path/to/save/plots
 """
 
@@ -18,7 +20,6 @@ import os
 import sys
 
 import h5py
-import hydra
 import numpy as np
 import torch
 import torch.nn as nn
@@ -143,11 +144,13 @@ def build_model(cfg):
 
 
 @torch.no_grad()
-def run_offline_eval(model, states, actions, features, prompt_embedding, cfg, batch_size=256):
-    """Run batched sliding-window prediction across an entire episode.
+def run_offline_eval(model, states, actions, features, prompt_embedding, cfg,
+                     batch_size=256, num_exec=1):
+    """Run batched inference at every num_exec steps across an episode.
 
     Returns:
-        pred_actions: (T-1, action_dim) first-step predicted actions
+        all_preds: (Q, num_pred, action_dim) predicted action chunks per query
+        query_steps: list of Q query timestep indices
         gt_actions: (T-1, action_dim) ground-truth actions
         timesteps: (T-1,) timestep indices
     """
@@ -157,14 +160,18 @@ def run_offline_eval(model, states, actions, features, prompt_embedding, cfg, ba
     T = len(states)
     num_cams = features.shape[1]
     num_steps = cfg.actor.num_steps
+    num_pred = cfg.actor.num_pred
     n_heads = cfg.transformer_concat.num_heads
     action_dim = actions.shape[1]
 
-    # Precompute all windows: for num_steps=1, each window is just one frame
-    # For num_steps>1, pad from the left with the first frame
-    all_states = []   # (T-1, num_steps, state_dim)
-    all_feats = []    # (T-1, num_steps, num_cams, feat_dim)
-    for t in range(T - 1):
+    # Query only at steps 0, num_exec, 2*num_exec, ...
+    query_steps = list(range(0, T - 1, num_exec))
+    Q = len(query_steps)
+
+    # Precompute windows only for query steps
+    all_states = []   # (Q, num_steps, state_dim)
+    all_feats = []    # (Q, num_steps, num_cams, feat_dim)
+    for t in query_steps:
         start = max(0, t - num_steps + 1)
         end = t + 1
         pad_len = num_steps - (end - start)
@@ -175,8 +182,8 @@ def run_offline_eval(model, states, actions, features, prompt_embedding, cfg, ba
             f = np.concatenate([np.tile(f[0:1], (pad_len, 1, 1)), f], axis=0)
         all_states.append(s)
         all_feats.append(f)
-    all_states = np.stack(all_states)  # (T-1, num_steps, state_dim)
-    all_feats = np.stack(all_feats)    # (T-1, num_steps, num_cams, feat_dim)
+    all_states = np.stack(all_states)  # (Q, num_steps, state_dim)
+    all_feats = np.stack(all_feats)    # (Q, num_steps, num_cams, feat_dim)
 
     # Precompute masks (same for every sample)
     side = getattr(cfg.data, 'side', 'both')
@@ -204,12 +211,11 @@ def run_offline_eval(model, states, actions, features, prompt_embedding, cfg, ba
     prompt_window = prompt_t.unsqueeze(0).repeat(num_steps, 1)  # (L, 768)
     state_mask_t = torch.tensor(state_mask_vec, dtype=torch.float32).cuda()
 
-    # Run batched inference
-    N = T - 1
-    pred_actions = np.zeros((N, action_dim), dtype=np.float32)
+    # Run batched inference over query steps
+    all_preds = np.zeros((Q, num_pred, action_dim), dtype=np.float32)
 
-    for b_start in range(0, N, batch_size):
-        b_end = min(b_start + batch_size, N)
+    for b_start in range(0, Q, batch_size):
+        b_end = min(b_start + batch_size, Q)
         B = b_end - b_start
 
         states_b = torch.tensor(all_states[b_start:b_end], dtype=torch.float32).cuda()  # (B, L, state_dim)
@@ -230,11 +236,66 @@ def run_offline_eval(model, states, actions, features, prompt_embedding, cfg, ba
         att_mask_b = att_mask.unsqueeze(0).expand(B, -1, -1, -1).reshape(B * n_heads, L, L)
 
         preds = model(obs_each_mod=obs_each_mod, mask_each_mod=mask_each_mod, attn_mask=att_mask_b)
-        pred_actions[b_start:b_end] = preds[-1][:, 0].cpu().numpy()
+        all_preds[b_start:b_end] = preds[-1].cpu().numpy()  # (B, num_pred, action_dim)
 
-    gt_actions = actions[:N]
-    timesteps = np.arange(N)
-    return pred_actions, gt_actions, timesteps
+    gt_actions = actions[:T - 1]
+    timesteps = np.arange(T - 1)
+    return all_preds, query_steps, gt_actions, timesteps
+
+
+def apply_temporal_smoothing(all_preds, query_steps, num_pred, num_exec, smooth_lambda, T):
+    """Apply ACT-style temporal ensemble smoothing over overlapping predictions.
+
+    Since num_pred % num_exec == 0, every timestep (after warmup) has exactly
+    K = num_pred // num_exec overlapping predictions from consecutive queries.
+
+    Args:
+        all_preds: (Q, num_pred, action_dim) predicted action chunks per query
+        query_steps: list of Q query timestep indices
+        num_pred: number of actions predicted per query
+        num_exec: steps between consecutive queries
+        smooth_lambda: exponential decay (0 = uniform average)
+        T: total episode length (states), so T-1 action timesteps
+
+    Returns:
+        smoothed: (T-1, action_dim) temporally smoothed predicted actions
+    """
+    N = T - 1
+    action_dim = all_preds.shape[2]
+    K = num_pred // num_exec  # max number of overlapping predictions per timestep
+
+    # Precompute unnormalized weights: k=0 (most recent) -> k=K-1 (oldest)
+    raw_weights = np.exp(-smooth_lambda * np.arange(K))
+
+    smoothed = np.zeros((N, action_dim), dtype=np.float32)
+
+    for t in range(N):
+        # Most recent query that covers t: the largest q in query_steps where q <= t
+        # Since queries are at 0, num_exec, 2*num_exec, ..., this is:
+        latest_qi = t // num_exec
+        latest_qi = min(latest_qi, len(query_steps) - 1)
+
+        # Collect overlapping predictions (most recent first)
+        preds = []
+        for k in range(K):
+            qi = latest_qi - k
+            if qi < 0:
+                break
+            q = query_steps[qi]
+            offset = t - q
+            if offset < 0 or offset >= num_pred:
+                break
+            preds.append(all_preds[qi, offset])
+
+        if not preds:
+            continue
+
+        n = len(preds)
+        w = raw_weights[:n]
+        w = w / w.sum()
+        smoothed[t] = (np.stack(preds) * w[:, None]).sum(axis=0)
+
+    return smoothed
 
 
 def plot_dof_group(timesteps, pred_actions, gt_actions, group_name, dof_start, dof_end, output_dir):
@@ -277,6 +338,10 @@ def main():
     parser.add_argument("--epoch", type=int, default=None,
                         help="Checkpoint epoch to load (default: latest)")
     parser.add_argument("--batch-size", type=int, default=256, help="Batch size for inference")
+    parser.add_argument("--num-exec", type=int, default=None,
+                        help="Steps between model re-queries (default: from config)")
+    parser.add_argument("--smooth-lambda", type=float, default=0.0,
+                        help="Exponential decay for ACT temporal ensemble (0 = uniform avg)")
     parser.add_argument("--output-dir", default=None,
                         help="Directory to save plots (default: log-dir/eval_<episode>)")
     args = parser.parse_args()
@@ -284,6 +349,14 @@ def main():
     # Load train metadata (config + action stats + noise stats)
     meta = torch.load(os.path.join(args.log_dir, "train_meta.pt"), map_location='cpu')
     cfg = OmegaConf.create(meta['cfg'])
+
+    # Resolve and validate num_exec
+    num_exec = args.num_exec if args.num_exec is not None else getattr(cfg.actor, 'num_exec', 1)
+    num_pred = cfg.actor.num_pred
+    if num_exec < 1:
+        raise ValueError(f"num_exec must be >= 1, got {num_exec}")
+    if num_pred % num_exec != 0:
+        raise ValueError(f"num_pred ({num_pred}) must be divisible by num_exec ({num_exec})")
 
     # Find checkpoint
     if args.epoch is not None:
@@ -306,7 +379,7 @@ def main():
     if args.output_dir is None:
         ep_name = os.path.basename(args.episode_dir)
         epoch_str = os.path.basename(ckpt_path).replace('.pt', '')
-        args.output_dir = os.path.join(args.log_dir, f"eval_{ep_name}_{epoch_str}")
+        args.output_dir = os.path.join(args.log_dir, f"eval_{ep_name}_{epoch_str}_ne{num_exec}_sl{args.smooth_lambda}")
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Load episode data
@@ -336,11 +409,20 @@ def main():
     model.cuda()
 
     # Run prediction (model outputs normalized actions)
-    print(f"Running offline eval (num_steps={cfg.actor.num_steps}, num_pred={cfg.actor.num_pred}, episode length={len(states)})...")
-    pred_actions_normed, gt_actions_normed, timesteps = run_offline_eval(
-        model, states, actions_normed, features, prompt_embedding, cfg, batch_size=args.batch_size
+    print(f"Running offline eval (num_steps={cfg.actor.num_steps}, num_pred={num_pred}, "
+          f"num_exec={num_exec}, smooth_lambda={args.smooth_lambda}, "
+          f"episode length={len(states)})...")
+    all_preds_normed, query_steps, gt_actions_normed, timesteps = run_offline_eval(
+        model, states, actions_normed, features, prompt_embedding, cfg,
+        batch_size=args.batch_size, num_exec=num_exec
     )
-    print(f"  Predictions: {pred_actions_normed.shape}")
+    print(f"  Queries: {len(query_steps)} (vs {len(states)-1} timesteps)")
+
+    # Apply temporal smoothing
+    pred_actions_normed = apply_temporal_smoothing(
+        all_preds_normed, query_steps, num_pred, num_exec, args.smooth_lambda, len(states)
+    )
+    print(f"  Smoothed predictions: {pred_actions_normed.shape}")
 
     # Unnormalize for plotting: [-1, 1] → [q01, q99]
     if action_q01 is not None:
@@ -408,6 +490,10 @@ def main():
         gt_actions=gt_actions_plot,
         timesteps=timesteps,
         l1_errors=l1_errors,
+        num_exec=num_exec,
+        num_pred=num_pred,
+        smooth_lambda=args.smooth_lambda,
+        query_steps=np.array(query_steps),
     )
     print(f"Saved eval_data.npz")
 

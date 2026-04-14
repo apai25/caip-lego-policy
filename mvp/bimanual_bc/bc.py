@@ -85,7 +85,7 @@ def test_epoch(cfg, test_loader, model, meter, cur_epoch):
         cam_masks = visible_cam_mask.split(1, dim=-1)
         for img_mask, cam_mask in zip(img_masks, cam_masks):
             img_mask[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = 1
-            img_mask = img_mask * cam_mask[..., None]
+            img_mask.mul_(cam_mask[..., None])
         _act_dim = pi_act.shape[-1]
         state_mask = mod_mask[:, :, :-_act_dim]
         action_mask = mod_mask[:, :, -_act_dim:]
@@ -195,7 +195,7 @@ def train_epoch(cfg, train_loader, model, optimizer, meter, cur_epoch):
         cam_masks = visible_cam_mask.split(1, dim=-1)
         for img_mask, cam_mask in zip(img_masks, cam_masks):
             img_mask[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = 1
-            img_mask = img_mask * cam_mask[..., None]
+            img_mask.mul_(cam_mask[..., None])
         _act_dim = pi_act.shape[-1]
         state_mask = mod_mask[:, :, :-_act_dim]
         action_mask = mod_mask[:, :, -_act_dim:]
