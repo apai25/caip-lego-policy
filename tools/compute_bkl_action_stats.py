@@ -26,31 +26,31 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
 def compute_action_for_pair(action_data, k, t1):
-    """Compute body-frame delta action for a (k, t1) pair.
+    """Compute action for a (k, t1) pair. Body-frame delta relative to current state.
 
     Same logic as BKL_Dataset._compute_action.
     Returns 62D: [left_xyz(3), left_rot6d(6), right_xyz(3), right_rot6d(6),
                    left_hand(22), right_hand(22)]
     """
-    left_curr = action_data['left_arm_target_pose'][k]
+    left_state = action_data['left_arm_current_pose'][k]
     left_tgt = action_data['left_arm_target_pose'][t1]
-    left_R_curr = left_curr[:3, :3]
-    left_delta_xyz = (left_R_curr.T @ (left_tgt[:3, 3] - left_curr[:3, 3])).astype(np.float32)
-    left_R_delta = left_R_curr.T @ left_tgt[:3, :3]
+    left_R = left_state[:3, :3]
+    left_delta_xyz = (left_R.T @ (left_tgt[:3, 3] - left_state[:3, 3])).astype(np.float32)
+    left_R_delta = left_R.T @ left_tgt[:3, :3]
     left_delta_rot6d = np.concatenate([left_R_delta[:, 0], left_R_delta[:, 1]]).astype(np.float32)
 
-    right_curr = action_data['right_arm_target_pose'][k]
+    right_state = action_data['right_arm_current_pose'][k]
     right_tgt = action_data['right_arm_target_pose'][t1]
-    right_R_curr = right_curr[:3, :3]
-    right_delta_xyz = (right_R_curr.T @ (right_tgt[:3, 3] - right_curr[:3, 3])).astype(np.float32)
-    right_R_delta = right_R_curr.T @ right_tgt[:3, :3]
+    right_R = right_state[:3, :3]
+    right_delta_xyz = (right_R.T @ (right_tgt[:3, 3] - right_state[:3, 3])).astype(np.float32)
+    right_R_delta = right_R.T @ right_tgt[:3, :3]
     right_delta_rot6d = np.concatenate([right_R_delta[:, 0], right_R_delta[:, 1]]).astype(np.float32)
 
-    left_hand_delta = (action_data['left_hand_cmd'][t1] - action_data['left_hand_cmd'][k]).astype(np.float32)
-    right_hand_delta = (action_data['right_hand_cmd'][t1] - action_data['right_hand_cmd'][k]).astype(np.float32)
+    left_hand_target = action_data['left_hand_cmd'][t1].astype(np.float32)
+    right_hand_target = action_data['right_hand_cmd'][t1].astype(np.float32)
     return np.concatenate([left_delta_xyz, left_delta_rot6d,
                            right_delta_xyz, right_delta_rot6d,
-                           left_hand_delta, right_hand_delta])  # (62,)
+                           left_hand_target, right_hand_target])  # (62,)
 
 
 def load_action_data(h5_path):
@@ -58,6 +58,8 @@ def load_action_data(h5_path):
     with h5py.File(h5_path, 'r') as f:
         T = f['timestamp'].shape[0]
         action_data = {
+            'left_arm_current_pose': f['left_arm_current_pose'][:].astype(np.float64),
+            'right_arm_current_pose': f['right_arm_current_pose'][:].astype(np.float64),
             'left_arm_target_pose': f['left_arm_target_pose'][:].astype(np.float64),
             'right_arm_target_pose': f['right_arm_target_pose'][:].astype(np.float64),
             'left_hand_cmd': f['left_hand_target_joint_positions'][:].astype(np.float32),

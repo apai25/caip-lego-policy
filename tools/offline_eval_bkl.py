@@ -74,24 +74,24 @@ def load_episode_data(episode_dir, frame_skip=1):
     right_eef = pose_to_xyz_rot6d(right_arm_pose)  # (T, 9)
     states = np.concatenate([left_eef, right_eef, left_hand_pos, right_hand_pos], axis=1)  # (T, 62)
 
-    # Compute per-timestep body-frame ground-truth actions with 6D rotation
+    # Compute per-timestep actions: body-frame delta (relative to current state) + absolute hand targets
     T = len(states)
     actions = np.zeros((T, 62), dtype=np.float32)
     for k in range(T - 1):
         t1 = min(k + frame_skip + 1, T - 1)
-        # Left arm: body-frame delta
-        left_R_curr = left_arm_target_pose[k, :3, :3]
-        actions[k, 0:3] = left_R_curr.T @ (left_arm_target_pose[t1, :3, 3] - left_arm_target_pose[k, :3, 3])
-        left_R_delta = left_R_curr.T @ left_arm_target_pose[t1, :3, :3]
+        # Left arm: body-frame delta relative to current state
+        left_R = left_arm_pose[k, :3, :3]
+        actions[k, 0:3] = left_R.T @ (left_arm_target_pose[t1, :3, 3] - left_arm_pose[k, :3, 3])
+        left_R_delta = left_R.T @ left_arm_target_pose[t1, :3, :3]
         actions[k, 3:9] = np.concatenate([left_R_delta[:, 0], left_R_delta[:, 1]])
-        # Right arm: body-frame delta
-        right_R_curr = right_arm_target_pose[k, :3, :3]
-        actions[k, 9:12] = right_R_curr.T @ (right_arm_target_pose[t1, :3, 3] - right_arm_target_pose[k, :3, 3])
-        right_R_delta = right_R_curr.T @ right_arm_target_pose[t1, :3, :3]
+        # Right arm: body-frame delta relative to current state
+        right_R = right_arm_pose[k, :3, :3]
+        actions[k, 9:12] = right_R.T @ (right_arm_target_pose[t1, :3, 3] - right_arm_pose[k, :3, 3])
+        right_R_delta = right_R.T @ right_arm_target_pose[t1, :3, :3]
         actions[k, 12:18] = np.concatenate([right_R_delta[:, 0], right_R_delta[:, 1]])
-        # Hands
-        actions[k, 18:40] = left_hand_cmd[t1] - left_hand_cmd[k]
-        actions[k, 40:62] = right_hand_cmd[t1] - right_hand_cmd[k]
+        # Hands: absolute target positions
+        actions[k, 18:40] = left_hand_cmd[t1]
+        actions[k, 40:62] = right_hand_cmd[t1]
 
     with h5py.File(feat_path, 'r') as f:
         features = f['features'][:].astype(np.float32)
@@ -367,36 +367,22 @@ def main():
     # For hand joints (simple additive deltas), cumsum works directly.
     # For arm EEF, xyz deltas are body-frame so we just show hand joints for now.
     # Hand joint indices: left [18:40], right [40:62]
+    # Hand actions are absolute target positions — plot directly (no integration needed)
     hand_groups = {
         "left_hand": (18, 40),
         "right_hand": (40, 62),
     }
-    # GT absolute hand positions from the episode states
-    gt_hand_abs = states[:len(timesteps)]  # (N, 62) — states at each eval timestep
-
-    # Integrate predicted deltas: pos[t+1] = pos[t] + delta[t]
-    pred_hand_abs = np.zeros_like(gt_hand_abs)
-    pred_hand_abs[0] = gt_hand_abs[0]  # start from same initial state
-    for t in range(1, len(timesteps)):
-        pred_hand_abs[t] = pred_hand_abs[t - 1].copy()
-        # Integrate hand joints (additive deltas)
-        for start_idx, end_idx in hand_groups.values():
-            pred_hand_abs[t, start_idx:end_idx] = (
-                pred_hand_abs[t - 1, start_idx:end_idx] + pred_actions[t - 1, start_idx:end_idx]
-            )
-
-    # Plot absolute hand positions
     for group_name, (start, end) in hand_groups.items():
         n_dofs = end - start
         cols = min(4, n_dofs)
         rows = (n_dofs + cols - 1) // cols
         fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 3 * rows), squeeze=False)
-        fig.suptitle(f"{group_name} — Absolute Position (integrated)", fontsize=14)
+        fig.suptitle(f"{group_name} — Absolute Target Position", fontsize=14)
         for i in range(n_dofs):
             dof_idx = start + i
             ax = axes[i // cols][i % cols]
-            ax.plot(timesteps, gt_hand_abs[:, dof_idx], label='GT', alpha=0.7, linewidth=0.8)
-            ax.plot(timesteps, pred_hand_abs[:, dof_idx], label='Pred (integrated)', alpha=0.7, linewidth=0.8)
+            ax.plot(timesteps, gt_actions_plot[:, dof_idx], label='GT', alpha=0.7, linewidth=0.8)
+            ax.plot(timesteps, pred_actions[:, dof_idx], label='Pred', alpha=0.7, linewidth=0.8)
             ax.set_title(DOF_LABELS[dof_idx], fontsize=9)
             ax.set_xlabel('timestep', fontsize=8)
             ax.set_ylabel('position', fontsize=8)

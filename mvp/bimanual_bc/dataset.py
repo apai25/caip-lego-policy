@@ -643,6 +643,8 @@ class BKL_Dataset(torch.utils.data.Dataset):
         states = np.concatenate([left_eef, right_eef, left_hand_pos, right_hand_pos], axis=1)  # (T, 62)
 
         action_data = {
+            'left_arm_current_pose': left_arm_pose,
+            'right_arm_current_pose': right_arm_pose,
             'left_arm_target_pose': left_arm_target_pose,
             'right_arm_target_pose': right_arm_target_pose,
             'left_hand_cmd': left_hand_cmd,
@@ -652,35 +654,38 @@ class BKL_Dataset(torch.utils.data.Dataset):
         return states, action_data
 
     def _compute_action(self, action_data, k, t1):
-        """Compute body-frame delta action from target[k] to target[t1].
+        """Compute action from timestep k targeting timestep t1.
 
-        delta_xyz = R_curr^T @ (t_target - t_curr)
-        R_delta = R_curr^T @ R_target → first 2 columns (6D)
+        Arm: body-frame delta relative to current state pose (not target pose).
+            delta_xyz = R_curr_state^T @ (t_target_future - t_curr_state)
+            R_delta = R_curr_state^T @ R_target_future → first 2 columns (6D)
+        Hand: absolute target joint positions at t1.
+
         Returns (62,): [left_xyz(3), left_rot6d(6), right_xyz(3), right_rot6d(6),
                         left_hand(22), right_hand(22)]
         """
-        # Left arm: body-frame delta
-        left_curr = action_data['left_arm_target_pose'][k]
+        # Left arm: body-frame delta relative to current state
+        left_state = action_data['left_arm_current_pose'][k]
         left_tgt = action_data['left_arm_target_pose'][t1]
-        left_R_curr = left_curr[:3, :3]
-        left_delta_xyz = (left_R_curr.T @ (left_tgt[:3, 3] - left_curr[:3, 3])).astype(np.float32)
-        left_R_delta = left_R_curr.T @ left_tgt[:3, :3]
+        left_R_state = left_state[:3, :3]
+        left_delta_xyz = (left_R_state.T @ (left_tgt[:3, 3] - left_state[:3, 3])).astype(np.float32)
+        left_R_delta = left_R_state.T @ left_tgt[:3, :3]
         left_delta_rot6d = np.concatenate([left_R_delta[:, 0], left_R_delta[:, 1]]).astype(np.float32)
 
-        # Right arm: body-frame delta
-        right_curr = action_data['right_arm_target_pose'][k]
+        # Right arm: body-frame delta relative to current state
+        right_state = action_data['right_arm_current_pose'][k]
         right_tgt = action_data['right_arm_target_pose'][t1]
-        right_R_curr = right_curr[:3, :3]
-        right_delta_xyz = (right_R_curr.T @ (right_tgt[:3, 3] - right_curr[:3, 3])).astype(np.float32)
-        right_R_delta = right_R_curr.T @ right_tgt[:3, :3]
+        right_R_state = right_state[:3, :3]
+        right_delta_xyz = (right_R_state.T @ (right_tgt[:3, 3] - right_state[:3, 3])).astype(np.float32)
+        right_R_delta = right_R_state.T @ right_tgt[:3, :3]
         right_delta_rot6d = np.concatenate([right_R_delta[:, 0], right_R_delta[:, 1]]).astype(np.float32)
 
-        # Hands: delta joint positions
-        left_hand_delta = (action_data['left_hand_cmd'][t1] - action_data['left_hand_cmd'][k]).astype(np.float32)
-        right_hand_delta = (action_data['right_hand_cmd'][t1] - action_data['right_hand_cmd'][k]).astype(np.float32)
+        # Hands: absolute target joint positions
+        left_hand_target = action_data['left_hand_cmd'][t1].astype(np.float32)
+        right_hand_target = action_data['right_hand_cmd'][t1].astype(np.float32)
         return np.concatenate([left_delta_xyz, left_delta_rot6d,
                                right_delta_xyz, right_delta_rot6d,
-                               left_hand_delta, right_hand_delta])  # (62,)
+                               left_hand_target, right_hand_target])  # (62,)
 
     def _construct(self):
         print("Loading BKL demos from: {}".format(self._demo_root))
@@ -762,17 +767,18 @@ class BKL_Dataset(torch.utils.data.Dataset):
                     "visible_cam_keys": visible_cam_keys,
                 }
                 if k == 0:
-                    # prepad with stationary states (zero action for delta, state for absolute)
-                    # Identity delta: zero xyz, identity rotation [1,0,0,0,1,0], zero hand
-                    identity_action = np.zeros(self.ACTION_DIM, dtype=np.float32)
-                    identity_action[3:6] = [1, 0, 0]   # left rot col0
-                    identity_action[6:9] = [0, 1, 0]   # left rot col1
-                    identity_action[12:15] = [1, 0, 0]  # right rot col0
-                    identity_action[15:18] = [0, 1, 0]  # right rot col1
+                    # Prepad: stationary action = no arm movement + current hand position
+                    stationary_action = np.zeros(self.ACTION_DIM, dtype=np.float32)
+                    stationary_action[3:6] = [1, 0, 0]   # left rot col0 (identity)
+                    stationary_action[6:9] = [0, 1, 0]   # left rot col1 (identity)
+                    stationary_action[12:15] = [1, 0, 0]  # right rot col0 (identity)
+                    stationary_action[15:18] = [0, 1, 0]  # right rot col1 (identity)
+                    stationary_action[18:40] = action_data['left_hand_cmd'][0]   # initial hand pos
+                    stationary_action[40:62] = action_data['right_hand_cmd'][0]  # initial hand pos
                     if self._action_q01 is not None:
-                        zero_action = np.clip((identity_action - self._action_q01) / self._action_range * 2 - 1, -1, 1)
+                        zero_action = np.clip((stationary_action - self._action_q01) / self._action_range * 2 - 1, -1, 1)
                     else:
-                        zero_action = identity_action
+                        zero_action = stationary_action
                     for _ in range(self._num_steps - self._num_pred + self._look_ahead):
                         e_pad = copy.deepcopy(element)
                         e_pad["action"] = zero_action.copy()
