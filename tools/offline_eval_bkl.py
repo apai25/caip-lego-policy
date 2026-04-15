@@ -2,9 +2,10 @@
 
 """Offline evaluation of a trained BKL policy on a single episode.
 
-Loads model weights and runs sliding-window prediction across an entire episode
-with ACT-style temporal ensemble smoothing, then generates per-DOF plots
-comparing predicted vs ground-truth actions.
+Simulates real-time execution: queries the model at model-timestep cadence
+(every num_exec * (frame_skip+1) raw frames), applies ACT-style temporal
+ensemble smoothing, converts predicted deltas to absolute EEF targets,
+and compares against ground-truth next-states.
 
 Usage:
     python tools/offline_eval_bkl.py \
@@ -36,10 +37,10 @@ from mvp.bimanual_bc.actor import ActorTransformerConcat_Bimanual, \
     ActorTransformerConcatAttnPoolingDiffusion_Bimanual
 
 
-# DOF labels for the 62-dim action space (body-frame delta_eef + 6D rotation)
-DOF_LABELS = (
-    ["left_dx", "left_dy", "left_dz"] + [f"left_r6d_{i}" for i in range(6)] +
-    ["right_dx", "right_dy", "right_dz"] + [f"right_r6d_{i}" for i in range(6)] +
+# DOF labels for absolute EEF targets (xyz + rot6d)
+TARGET_DOF_LABELS = (
+    ["left_x", "left_y", "left_z"] + [f"left_r6d_{i}" for i in range(6)] +
+    ["right_x", "right_y", "right_z"] + [f"right_r6d_{i}" for i in range(6)] +
     [f"left_hand_j{i}" for i in range(22)] +
     [f"right_hand_j{i}" for i in range(22)]
 )
@@ -53,7 +54,15 @@ DOF_GROUPS = {
 
 
 def load_episode_data(episode_dir, frame_skip=1):
-    """Load state, action, and features from an episode directory."""
+    """Load state, action, features, and raw poses from an episode directory.
+
+    Returns:
+        states: (T, 62) absolute state [left_eef(9), right_eef(9), left_hand(22), right_hand(22)]
+        actions: (T, 62) body-frame delta actions (computed with frame_skip)
+        features: (T, num_cams, feat_dim) pre-extracted MAE features
+        left_arm_pose: (T, 4, 4) raw homogeneous transforms
+        right_arm_pose: (T, 4, 4) raw homogeneous transforms
+    """
     from mvp.bimanual_bc.dataset import pose_to_xyz_rot6d
 
     ep_name = os.path.basename(episode_dir)
@@ -75,36 +84,30 @@ def load_episode_data(episode_dir, frame_skip=1):
     right_eef = pose_to_xyz_rot6d(right_arm_pose)  # (T, 9)
     states = np.concatenate([left_eef, right_eef, left_hand_pos, right_hand_pos], axis=1)  # (T, 62)
 
-    # Compute per-timestep actions: body-frame delta (relative to current state) + absolute hand targets
+    # Compute per-timestep actions: body-frame delta + absolute hand targets
     T = len(states)
     actions = np.zeros((T, 62), dtype=np.float32)
     for k in range(T - 1):
         t1 = min(k + frame_skip + 1, T - 1)
-        # Left arm: body-frame delta relative to current state
         left_R = left_arm_pose[k, :3, :3]
         actions[k, 0:3] = left_R.T @ (left_arm_target_pose[t1, :3, 3] - left_arm_pose[k, :3, 3])
         left_R_delta = left_R.T @ left_arm_target_pose[t1, :3, :3]
         actions[k, 3:9] = np.concatenate([left_R_delta[:, 0], left_R_delta[:, 1]])
-        # Right arm: body-frame delta relative to current state
         right_R = right_arm_pose[k, :3, :3]
         actions[k, 9:12] = right_R.T @ (right_arm_target_pose[t1, :3, 3] - right_arm_pose[k, :3, 3])
         right_R_delta = right_R.T @ right_arm_target_pose[t1, :3, :3]
         actions[k, 12:18] = np.concatenate([right_R_delta[:, 0], right_R_delta[:, 1]])
-        # Hands: absolute target positions
         actions[k, 18:40] = left_hand_cmd[t1]
         actions[k, 40:62] = right_hand_cmd[t1]
 
     with h5py.File(feat_path, 'r') as f:
         features = f['features'][:].astype(np.float32)
 
-    return states, actions, features
+    return states, actions, features, left_arm_pose, right_arm_pose
 
 
 def build_model(cfg):
-    """Build the model from config (same logic as bc.py).
-
-    cfg can be an OmegaConf object or a plain dict (from train_meta.pt).
-    """
+    """Build the model from config (same logic as bc.py)."""
     cfg = OmegaConf.create(cfg) if isinstance(cfg, dict) else cfg
     prompt_output_dim = [cfg.actor.prompt_dim]
     img_output_dim = [cfg.actor.im_dim for _ in range(len(cfg.data.cams))]
@@ -143,49 +146,96 @@ def build_model(cfg):
     return model
 
 
-@torch.no_grad()
-def run_offline_eval(model, states, actions, features, prompt_embedding, cfg,
-                     batch_size=256, num_exec=1):
-    """Run batched inference at every num_exec steps across an episode.
+def rot6d_to_matrix(rot6d):
+    """Convert 6D rotation representation to 3x3 rotation matrix (Gram-Schmidt)."""
+    v1, v2 = rot6d[0:3], rot6d[3:6]
+    e1 = v1 / np.linalg.norm(v1)
+    u2 = v2 - np.dot(e1, v2) * e1
+    e2 = u2 / np.linalg.norm(u2)
+    e3 = np.cross(e1, e2)
+    return np.column_stack((e1, e2, e3))
+
+
+def action_to_absolute_target(action, left_pose_4x4, right_pose_4x4):
+    """Convert a body-frame delta action to a 62D absolute target.
+
+    Args:
+        action: (62,) denormalized action [left_delta(9), right_delta(9), left_hand(22), right_hand(22)]
+        left_pose_4x4: (4, 4) current left arm homogeneous transform
+        right_pose_4x4: (4, 4) current right arm homogeneous transform
 
     Returns:
-        all_preds: (Q, num_pred, action_dim) predicted action chunks per query
-        query_steps: list of Q query timestep indices
-        gt_actions: (T-1, action_dim) ground-truth actions
-        timesteps: (T-1,) timestep indices
+        target: (62,) absolute target in the same format as state
+    """
+    target = np.zeros(62, dtype=np.float32)
+
+    # Left arm: body-frame delta → world-frame target
+    left_R = left_pose_4x4[:3, :3]
+    left_pos = left_pose_4x4[:3, 3]
+    target[0:3] = left_pos + left_R @ action[0:3]
+    left_R_delta = rot6d_to_matrix(action[3:9])
+    left_R_target = left_R @ left_R_delta
+    target[3:9] = np.concatenate([left_R_target[:, 0], left_R_target[:, 1]])
+
+    # Right arm: body-frame delta → world-frame target
+    right_R = right_pose_4x4[:3, :3]
+    right_pos = right_pose_4x4[:3, 3]
+    target[9:12] = right_pos + right_R @ action[9:12]
+    right_R_delta = rot6d_to_matrix(action[12:18])
+    right_R_target = right_R @ right_R_delta
+    target[12:18] = np.concatenate([right_R_target[:, 0], right_R_target[:, 1]])
+
+    # Hands: already absolute targets
+    target[18:62] = action[18:62]
+
+    return target
+
+
+@torch.no_grad()
+def run_offline_eval(model, states, features, prompt_embedding, cfg,
+                     frame_skip=1, batch_size=256, num_exec=1):
+    """Run batched inference at model-timestep cadence.
+
+    Model-timestep t corresponds to raw frame t * (frame_skip + 1).
+    Queries happen every num_exec model-timesteps.
+
+    Returns:
+        all_preds: (Q, num_pred, action_dim) predicted action chunks per query (normalized)
+        query_model_steps: list of Q query model-step indices
+        M: total number of model-timesteps
     """
     from mvp.bimanual_bc.dataset import BKL_Dataset
 
     model.eval()
     T = len(states)
+    step = frame_skip + 1
+    M = (T - 1) // step
     num_cams = features.shape[1]
     num_steps = cfg.actor.num_steps
     num_pred = cfg.actor.num_pred
     n_heads = cfg.transformer_concat.num_heads
-    action_dim = actions.shape[1]
+    action_dim = getattr(cfg.data, 'action_dim', 62)
 
-    # Query only at steps 0, num_exec, 2*num_exec, ...
-    query_steps = list(range(0, T - 1, num_exec))
-    Q = len(query_steps)
+    # Query at model-timesteps 0, num_exec, 2*num_exec, ...
+    query_model_steps = list(range(0, M, num_exec))
+    Q = len(query_model_steps)
 
-    # Precompute windows only for query steps
+    # Precompute context windows at model-timestep cadence
     all_states = []   # (Q, num_steps, state_dim)
     all_feats = []    # (Q, num_steps, num_cams, feat_dim)
-    for t in query_steps:
-        start = max(0, t - num_steps + 1)
-        end = t + 1
-        pad_len = num_steps - (end - start)
-        s = states[start:end]
-        f = features[start:end]
-        if pad_len > 0:
-            s = np.concatenate([np.tile(s[0:1], (pad_len, 1)), s], axis=0)
-            f = np.concatenate([np.tile(f[0:1], (pad_len, 1, 1)), f], axis=0)
-        all_states.append(s)
-        all_feats.append(f)
+    for q in query_model_steps:
+        indices = []
+        for i in range(num_steps):
+            model_t = q - (num_steps - 1 - i)
+            raw_idx = max(0, model_t) * step
+            raw_idx = min(raw_idx, T - 1)
+            indices.append(raw_idx)
+        all_states.append(states[indices])
+        all_feats.append(features[indices])
     all_states = np.stack(all_states)  # (Q, num_steps, state_dim)
     all_feats = np.stack(all_feats)    # (Q, num_steps, num_cams, feat_dim)
 
-    # Precompute masks (same for every sample)
+    # Precompute masks
     side = getattr(cfg.data, 'side', 'both')
     cam_keys = [f"feat_{c}" for c in cfg.data.cams]
     excluded_cam = None
@@ -202,7 +252,6 @@ def run_offline_eval(model, states, actions, features, prompt_embedding, cfg,
         for idx in BKL_Dataset.SIDE_INDICES[other]:
             state_mask_vec[idx] = 0.0
 
-    # Causal attention mask (shared across batch)
     L = num_steps
     causal_mask = torch.triu(torch.ones(L, L, device='cuda'), diagonal=1).bool()
     att_mask = causal_mask.unsqueeze(0).repeat(n_heads, 1, 1)
@@ -211,71 +260,59 @@ def run_offline_eval(model, states, actions, features, prompt_embedding, cfg,
     prompt_window = prompt_t.unsqueeze(0).repeat(num_steps, 1)  # (L, 768)
     state_mask_t = torch.tensor(state_mask_vec, dtype=torch.float32).cuda()
 
-    # Run batched inference over query steps
+    # Run batched inference
     all_preds = np.zeros((Q, num_pred, action_dim), dtype=np.float32)
 
     for b_start in range(0, Q, batch_size):
         b_end = min(b_start + batch_size, Q)
         B = b_end - b_start
 
-        states_b = torch.tensor(all_states[b_start:b_end], dtype=torch.float32).cuda()  # (B, L, state_dim)
-        feats_b = torch.tensor(all_feats[b_start:b_end], dtype=torch.float32).cuda()    # (B, L, num_cams, feat_dim)
+        states_b = torch.tensor(all_states[b_start:b_end], dtype=torch.float32).cuda()
+        feats_b = torch.tensor(all_feats[b_start:b_end], dtype=torch.float32).cuda()
 
-        prompt_b = prompt_window.unsqueeze(0).expand(B, -1, -1)   # (B, L, 768)
-        im_list = [feats_b[:, :, c, :] for c in range(num_cams)]  # list of (B, L, feat_dim)
+        prompt_b = prompt_window.unsqueeze(0).expand(B, -1, -1)
+        im_list = [feats_b[:, :, c, :] for c in range(num_cams)]
 
         obs_each_mod = [prompt_b] + im_list + [states_b]
 
-        # Masks
         prompt_mask = torch.ones_like(prompt_b)
         img_masks = [torch.full_like(im, cam_visible[c]) for c, im in enumerate(im_list)]
         s_mask = state_mask_t.unsqueeze(0).unsqueeze(0).expand(B, L, -1)
         mask_each_mod = [prompt_mask] + img_masks + [s_mask]
 
-        # Expand att_mask for batch (n_heads -> B * n_heads)
         att_mask_b = att_mask.unsqueeze(0).expand(B, -1, -1, -1).reshape(B * n_heads, L, L)
 
         preds = model(obs_each_mod=obs_each_mod, mask_each_mod=mask_each_mod, attn_mask=att_mask_b)
-        all_preds[b_start:b_end] = preds[-1].cpu().numpy()  # (B, num_pred, action_dim)
+        all_preds[b_start:b_end] = preds[-1].cpu().numpy()
 
-    gt_actions = actions[:T - 1]
-    timesteps = np.arange(T - 1)
-    return all_preds, query_steps, gt_actions, timesteps
+    return all_preds, query_model_steps, M
 
 
-def apply_temporal_smoothing(all_preds, query_steps, num_pred, num_exec, smooth_lambda, T):
-    """Apply ACT-style temporal ensemble smoothing over overlapping predictions.
-
-    Since num_pred % num_exec == 0, every timestep (after warmup) has exactly
-    K = num_pred // num_exec overlapping predictions from consecutive queries.
+def apply_temporal_smoothing(all_preds, query_steps, num_pred, num_exec, smooth_lambda, M):
+    """Apply ACT-style temporal ensemble smoothing in model-timestep space.
 
     Args:
         all_preds: (Q, num_pred, action_dim) predicted action chunks per query
-        query_steps: list of Q query timestep indices
+        query_steps: list of Q query model-step indices (0, num_exec, 2*num_exec, ...)
         num_pred: number of actions predicted per query
-        num_exec: steps between consecutive queries
+        num_exec: model-steps between consecutive queries
         smooth_lambda: exponential decay (0 = uniform average)
-        T: total episode length (states), so T-1 action timesteps
+        M: total number of model-timesteps
 
     Returns:
-        smoothed: (T-1, action_dim) temporally smoothed predicted actions
+        smoothed: (M, action_dim) temporally smoothed predicted actions
     """
-    N = T - 1
     action_dim = all_preds.shape[2]
-    K = num_pred // num_exec  # max number of overlapping predictions per timestep
+    K = num_pred // num_exec
 
-    # Precompute unnormalized weights: k=0 (most recent) -> k=K-1 (oldest)
     raw_weights = np.exp(-smooth_lambda * np.arange(K))
 
-    smoothed = np.zeros((N, action_dim), dtype=np.float32)
+    smoothed = np.zeros((M, action_dim), dtype=np.float32)
 
-    for t in range(N):
-        # Most recent query that covers t: the largest q in query_steps where q <= t
-        # Since queries are at 0, num_exec, 2*num_exec, ..., this is:
+    for t in range(M):
         latest_qi = t // num_exec
         latest_qi = min(latest_qi, len(query_steps) - 1)
 
-        # Collect overlapping predictions (most recent first)
         preds = []
         for k in range(K):
             qi = latest_qi - k
@@ -298,28 +335,27 @@ def apply_temporal_smoothing(all_preds, query_steps, num_pred, num_exec, smooth_
     return smoothed
 
 
-def plot_dof_group(timesteps, pred_actions, gt_actions, group_name, dof_start, dof_end, output_dir):
-    """Plot predicted vs ground-truth for a group of DOFs."""
+def plot_dof_group(model_steps, pred_targets, gt_targets, group_name, dof_start, dof_end, output_dir):
+    """Plot predicted vs ground-truth absolute targets for a group of DOFs."""
     n_dofs = dof_end - dof_start
     cols = min(4, n_dofs)
     rows = (n_dofs + cols - 1) // cols
 
     fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 3 * rows), squeeze=False)
-    fig.suptitle(f"{group_name} — Predicted vs Ground Truth", fontsize=14)
+    fig.suptitle(f"{group_name} — Absolute Target (Predicted vs GT)", fontsize=14)
 
     for i in range(n_dofs):
         dof_idx = dof_start + i
         ax = axes[i // cols][i % cols]
-        ax.plot(timesteps, gt_actions[:, dof_idx], label='GT', alpha=0.7, linewidth=0.8)
-        ax.plot(timesteps, pred_actions[:, dof_idx], label='Pred', alpha=0.7, linewidth=0.8)
-        ax.set_title(DOF_LABELS[dof_idx], fontsize=9)
-        ax.set_xlabel('timestep', fontsize=8)
-        ax.set_ylabel('rad', fontsize=8)
+        ax.plot(model_steps, gt_targets[:, dof_idx], label='GT', alpha=0.7, linewidth=0.8)
+        ax.plot(model_steps, pred_targets[:, dof_idx], label='Pred', alpha=0.7, linewidth=0.8)
+        ax.set_title(TARGET_DOF_LABELS[dof_idx], fontsize=9)
+        ax.set_xlabel('model step', fontsize=8)
+        ax.set_ylabel('value', fontsize=8)
         ax.tick_params(labelsize=7)
         if i == 0:
             ax.legend(fontsize=7)
 
-    # Hide unused subplots
     for i in range(n_dofs, rows * cols):
         axes[i // cols][i % cols].set_visible(False)
 
@@ -338,21 +374,23 @@ def main():
     parser.add_argument("--epoch", type=int, default=None,
                         help="Checkpoint epoch to load (default: latest)")
     parser.add_argument("--batch-size", type=int, default=256, help="Batch size for inference")
-    parser.add_argument("--num-exec", type=int, default=None,
-                        help="Steps between model re-queries (default: from config)")
+    parser.add_argument("--num-exec", type=int, default=1,
+                        help="Model-steps between model re-queries (default: 1)")
     parser.add_argument("--smooth-lambda", type=float, default=0.0,
                         help="Exponential decay for ACT temporal ensemble (0 = uniform avg)")
     parser.add_argument("--output-dir", default=None,
                         help="Directory to save plots (default: log-dir/eval_<episode>)")
     args = parser.parse_args()
 
-    # Load train metadata (config + action stats + noise stats)
+    # Load train metadata
     meta = torch.load(os.path.join(args.log_dir, "train_meta.pt"), map_location='cpu')
     cfg = OmegaConf.create(meta['cfg'])
 
-    # Resolve and validate num_exec
-    num_exec = args.num_exec if args.num_exec is not None else getattr(cfg.actor, 'num_exec', 1)
+    num_exec = args.num_exec
     num_pred = cfg.actor.num_pred
+    frame_skip = getattr(cfg.data, 'frame_skip', 1)
+    step = frame_skip + 1
+
     if num_exec < 1:
         raise ValueError(f"num_exec must be >= 1, got {num_exec}")
     if num_pred % num_exec != 0:
@@ -368,7 +406,7 @@ def main():
         ckpt_path = ckpts[-1]
     print(f"Checkpoint: {ckpt_path}")
 
-    # Action normalization stats from meta (quantile scaling)
+    # Action normalization stats
     action_q01, action_range = None, None
     if 'action_q01' in meta:
         action_q01 = np.array(meta['action_q01'], dtype=np.float32)
@@ -383,16 +421,12 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Load episode data
-    frame_skip = getattr(cfg.data, 'frame_skip', 1)
     print(f"Loading episode: {args.episode_dir}")
-    states, actions, features = load_episode_data(args.episode_dir, frame_skip)
-    print(f"  States: {states.shape}, Actions: {actions.shape}, Features: {features.shape}")
-
-    # Normalize GT actions (quantile scaling to [-1, 1], clipped to match training)
-    if action_q01 is not None:
-        actions_normed = np.clip((actions - action_q01) / action_range * 2 - 1, -1, 1)
-    else:
-        actions_normed = actions
+    states, _actions, features, left_arm_pose, right_arm_pose = load_episode_data(args.episode_dir, frame_skip)
+    T = len(states)
+    M = (T - 1) // step
+    print(f"  Raw frames: {T}, Model timesteps: {M} (frame_skip={frame_skip}, step={step})")
+    print(f"  States: {states.shape}, Features: {features.shape}")
 
     # Load prompt embedding
     prompt_embedding = np.load(cfg.data.prompt_embedding_path).astype(np.float32)
@@ -408,36 +442,53 @@ def main():
         print(f"  Unexpected keys: {uks}")
     model.cuda()
 
-    # Run prediction (model outputs normalized actions)
+    # Run prediction at model-timestep cadence (outputs normalized actions)
     print(f"Running offline eval (num_steps={cfg.actor.num_steps}, num_pred={num_pred}, "
-          f"num_exec={num_exec}, smooth_lambda={args.smooth_lambda}, "
-          f"episode length={len(states)})...")
-    all_preds_normed, query_steps, gt_actions_normed, timesteps = run_offline_eval(
-        model, states, actions_normed, features, prompt_embedding, cfg,
-        batch_size=args.batch_size, num_exec=num_exec
+          f"num_exec={num_exec}, smooth_lambda={args.smooth_lambda})...")
+    all_preds_normed, query_model_steps, M = run_offline_eval(
+        model, states, features, prompt_embedding, cfg,
+        frame_skip=frame_skip, batch_size=args.batch_size, num_exec=num_exec
     )
-    print(f"  Queries: {len(query_steps)} (vs {len(states)-1} timesteps)")
+    print(f"  Queries: {len(query_model_steps)} (over {M} model-timesteps)")
 
-    # Apply temporal smoothing
-    pred_actions_normed = apply_temporal_smoothing(
-        all_preds_normed, query_steps, num_pred, num_exec, args.smooth_lambda, len(states)
+    # Apply temporal smoothing in model-timestep space (still normalized)
+    smoothed_normed = apply_temporal_smoothing(
+        all_preds_normed, query_model_steps, num_pred, num_exec, args.smooth_lambda, M
     )
-    print(f"  Smoothed predictions: {pred_actions_normed.shape}")
+    print(f"  Smoothed predictions: {smoothed_normed.shape}")
 
-    # Unnormalize for plotting: [-1, 1] → [q01, q99]
+    # Denormalize: [-1, 1] → [q01, q99]
     if action_q01 is not None:
-        pred_actions = (pred_actions_normed + 1) / 2 * action_range + action_q01
-        gt_actions_plot = (gt_actions_normed + 1) / 2 * action_range + action_q01
+        smoothed_actions = (smoothed_normed + 1) / 2 * action_range + action_q01
     else:
-        pred_actions = pred_actions_normed
-        gt_actions_plot = gt_actions_normed
+        smoothed_actions = smoothed_normed
 
-    # Compute per-group L1 errors (in unnormalized space)
+    # Convert smoothed deltas to absolute targets (open-loop, using GT state)
+    # Also compute GT absolute targets for comparison
+    pred_targets = np.zeros((M, 62), dtype=np.float32)
+    gt_targets = np.zeros((M, 62), dtype=np.float32)
+
+    for t in range(M):
+        raw_t = t * step
+        raw_t1 = min(raw_t + step, T - 1)
+
+        # Predicted: apply smoothed delta to GT current state
+        pred_targets[t] = action_to_absolute_target(
+            smoothed_actions[t], left_arm_pose[raw_t], right_arm_pose[raw_t]
+        )
+
+        # GT: the actual next state at the target frame
+        gt_targets[t] = states[raw_t1]
+
+    model_steps = np.arange(M)
+
+    # Compute per-group L1 errors in absolute target space
     side = getattr(cfg.data, 'side', 'both')
-    l1_errors = np.abs(pred_actions - gt_actions_plot).mean(axis=0)
-    print("\nMean L1 error per DOF group:")
     from mvp.bimanual_bc.dataset import BKL_Dataset
     active_indices = BKL_Dataset.SIDE_INDICES[side] if side != 'both' else list(range(62))
+
+    l1_errors = np.abs(pred_targets - gt_targets).mean(axis=0)
+    print("\nMean L1 error per DOF group (absolute target space):")
     for group_name, (start, end) in DOF_GROUPS.items():
         group_indices = [i for i in range(start, end) if i in active_indices]
         if not group_indices:
@@ -448,52 +499,24 @@ def main():
     overall = l1_errors[active_indices].mean()
     print(f"  overall ({side}): {overall:.6f}")
 
-    # Generate delta plots
+    # Generate plots
     print(f"\nSaving plots to: {args.output_dir}")
     for group_name, (start, end) in DOF_GROUPS.items():
-        plot_dof_group(timesteps, pred_actions, gt_actions_plot, group_name, start, end, args.output_dir)
+        plot_dof_group(model_steps, pred_targets, gt_targets, group_name, start, end, args.output_dir)
 
-    # Hand actions are absolute target positions — plot directly (no integration needed)
-    hand_groups = {
-        "left_hand": (18, 40),
-        "right_hand": (40, 62),
-    }
-    for group_name, (start, end) in hand_groups.items():
-        n_dofs = end - start
-        cols = min(4, n_dofs)
-        rows = (n_dofs + cols - 1) // cols
-        fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 3 * rows), squeeze=False)
-        fig.suptitle(f"{group_name} — Absolute Target Position", fontsize=14)
-        for i in range(n_dofs):
-            dof_idx = start + i
-            ax = axes[i // cols][i % cols]
-            ax.plot(timesteps, gt_actions_plot[:, dof_idx], label='GT', alpha=0.7, linewidth=0.8)
-            ax.plot(timesteps, pred_actions[:, dof_idx], label='Pred', alpha=0.7, linewidth=0.8)
-            ax.set_title(DOF_LABELS[dof_idx], fontsize=9)
-            ax.set_xlabel('timestep', fontsize=8)
-            ax.set_ylabel('position', fontsize=8)
-            ax.tick_params(labelsize=7)
-            if i == 0:
-                ax.legend(fontsize=7)
-        for i in range(n_dofs, rows * cols):
-            axes[i // cols][i % cols].set_visible(False)
-        plt.tight_layout()
-        save_path = os.path.join(args.output_dir, f"{group_name}_absolute.png")
-        plt.savefig(save_path, dpi=150)
-        plt.close()
-        print(f"Saved: {save_path}")
-
-    # Also save raw data for further analysis
+    # Save data for analysis
     np.savez(
         os.path.join(args.output_dir, "eval_data.npz"),
-        pred_actions=pred_actions,
-        gt_actions=gt_actions_plot,
-        timesteps=timesteps,
+        pred_targets=pred_targets,
+        gt_targets=gt_targets,
+        model_steps=model_steps,
         l1_errors=l1_errors,
         num_exec=num_exec,
         num_pred=num_pred,
         smooth_lambda=args.smooth_lambda,
-        query_steps=np.array(query_steps),
+        frame_skip=frame_skip,
+        query_model_steps=np.array(query_model_steps),
+        smoothed_actions=smoothed_actions,
     )
     print(f"Saved eval_data.npz")
 
