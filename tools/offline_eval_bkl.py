@@ -504,6 +504,12 @@ def main():
     for group_name, (start, end) in DOF_GROUPS.items():
         plot_dof_group(model_steps, pred_targets, gt_targets, group_name, start, end, args.output_dir)
 
+    # Denormalize raw chunks for comparison with online replay
+    if action_q01 is not None:
+        all_preds_denormed = (all_preds_normed + 1) / 2 * action_range[None, None, :] + action_q01[None, None, :]
+    else:
+        all_preds_denormed = all_preds_normed.copy()
+
     # Save data for analysis
     np.savez(
         os.path.join(args.output_dir, "eval_data.npz"),
@@ -517,6 +523,7 @@ def main():
         frame_skip=frame_skip,
         query_model_steps=np.array(query_model_steps),
         smoothed_actions=smoothed_actions,
+        raw_chunks=all_preds_denormed,
     )
     print(f"Saved eval_data.npz")
 

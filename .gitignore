@@ -85,3 +85,4 @@ openclip_checkpoints
 *.tmp.xml
 *_edit.xml
 /ckpts/
+mae_pretrain_egosoup_vit_base.pth
