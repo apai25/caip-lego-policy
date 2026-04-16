@@ -233,10 +233,12 @@ class MVPPolicyServer:
 
 def main():
     parser = argparse.ArgumentParser(description="MVP-Generalize BKL policy server")
-    parser.add_argument("--log-dir", required=True)
-    parser.add_argument("--epoch", type=int, default=None)
-    parser.add_argument("--mae-weights", default=None)
-    parser.add_argument("--port", type=int, default=5678)
+    parser.add_argument("--log-dir",
+                        default="logs/bkl_pick-place-egg_vitb-mae_skip1_pred16_obs1_noise1x_bodyframe-6drot_actonly_proprio_right__041426_1119")
+    parser.add_argument("--epoch", type=int, default=200)
+    parser.add_argument("--mae-weights",
+                        default="/mnt/amlfs-01/home/dniu/Project/lego/mvp_weights")
+    parser.add_argument("--port", type=int, default=5679)
     parser.add_argument("--cuda", type=str, default="0")
     args = parser.parse_args()
 
