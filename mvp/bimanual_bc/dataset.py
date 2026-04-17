@@ -81,6 +81,85 @@ def process_image(im, im_size):
     return im
 
 
+_LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+
+def _apply_color_jitter(im_u8, rng, brightness, contrast, saturation, hue):
+    """torchvision-style ColorJitter on a uint8 HWC RGB array.
+
+    numpy + cv2 implementation (no PIL) — ~30x faster than the PIL version
+    while matching torchvision's semantics:
+      brightness: im * b_fac
+      contrast:   (im - gray_mean) * c_fac + gray_mean   (gray_mean = ITU-R BT.601 luma mean)
+      saturation: gray + s_fac * (im - gray)             (per-pixel luma grayscale)
+      hue:        shift H in HSV by h_fac * 180 degrees  (cv2 hue is 0..180)
+    Ops applied in a random order.
+    """
+    b_fac = float(rng.uniform(max(0.0, 1.0 - brightness), 1.0 + brightness))
+    c_fac = float(rng.uniform(max(0.0, 1.0 - contrast), 1.0 + contrast))
+    s_fac = float(rng.uniform(max(0.0, 1.0 - saturation), 1.0 + saturation))
+    h_fac = float(rng.uniform(-hue, hue))
+    fn_idx = rng.permutation(4)
+
+    im = im_u8.astype(np.float32)
+    for i in fn_idx:
+        if i == 0:
+            im = im * b_fac
+        elif i == 1:
+            gray_mean = float((im @ _LUMA).mean())
+            im = (im - gray_mean) * c_fac + gray_mean
+        elif i == 2:
+            gray = (im @ _LUMA)[..., None]
+            im = gray + s_fac * (im - gray)
+        elif i == 3:
+            hsv = cv2.cvtColor(np.clip(im, 0, 255).astype(np.uint8), cv2.COLOR_RGB2HSV)
+            hsv[..., 0] = (hsv[..., 0].astype(np.int32) + int(round(h_fac * 180))) % 180
+            im = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB).astype(np.float32)
+    return np.clip(im, 0, 255).astype(np.uint8)
+
+
+def _jittered_crop(im, rng, crop_jitter_pixels):
+    """Square crop with origin randomly offset by +/- crop_jitter_pixels from center."""
+    h, w = im.shape[:2]
+    base_size = min(h, w)
+    crop_size = base_size - 2 * crop_jitter_pixels
+    if crop_size <= 0:
+        return center_crop(im, base_size)
+    cx = (w - crop_size) // 2
+    cy = (h - crop_size) // 2
+    dx = int(rng.integers(-crop_jitter_pixels, crop_jitter_pixels + 1))
+    dy = int(rng.integers(-crop_jitter_pixels, crop_jitter_pixels + 1))
+    x = max(0, min(w - crop_size, cx + dx))
+    y = max(0, min(h - crop_size, cy + dy))
+    return im[y:y + crop_size, x:x + crop_size, :]
+
+
+def process_image_augmented(im, im_size, rng,
+                            use_color=False, use_crop=False,
+                            brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05,
+                            crop_jitter_pixels=16):
+    """process_image variant with optional color/crop jitter.
+
+    With use_color=False and use_crop=False, the output is bit-identical to
+    process_image(). Extraction relies on this to guarantee variant 0 is the
+    clean baseline that validation reads.
+    """
+    im = np.array(im)
+    if use_color:
+        im_u8 = im if im.dtype == np.uint8 else np.clip(im, 0, 255).astype(np.uint8)
+        im_u8 = _apply_color_jitter(im_u8, rng, brightness, contrast, saturation, hue)
+        im = im_u8.astype(np.float32)
+    else:
+        im = im.astype(np.float32)
+    if use_crop:
+        im = _jittered_crop(im, rng, crop_jitter_pixels)
+    else:
+        im = center_crop(im, im.shape[0])
+    im = cv2.resize(im, (im_size, im_size), interpolation=cv2.INTER_LINEAR)
+    im = normalize(im)
+    return im
+
+
 def process_image_no_normalize(im, im_size):
     """Processes an image for network input."""
     im = np.array(im).astype(np.float32)
@@ -188,7 +267,7 @@ class Bimanual_Dataset(torch.utils.data.Dataset):
             im_size=224, cams=["hand"], num_steps=1, num_pred=1, look_ahead=0,
             noisy_skip=False, frame_skip=0, default_pos_left_arm=[0., 0., 0., 0., 0., 0.],
             default_pos_right_arm=[0., 0., 0., 0., 0., 0.],
-            joint_noise_mean=0.0, joint_noise_std=0.0, joint_noise_std_scale=1.0, feats_noise_std=0.0,
+            joint_noise_mean=0.0, joint_noise_std=0.0, joint_noise_std_scale=1.0,
             data_filter={}, history_repeating=0.0, img_sample_num=-1,
             use_all_features=False, action_data_ratio=None, use_touch=False, skip_failure=True,
     ):
@@ -211,7 +290,6 @@ class Bimanual_Dataset(torch.utils.data.Dataset):
         self._joint_noise_mean = np.array(joint_noise_mean)
         self._joint_noise_std = np.array(joint_noise_std)
         self._joint_noise_std_scale = joint_noise_std_scale
-        self._feats_noise_std = feats_noise_std
         self._data_filter = data_filter
         self._history_repeating = history_repeating
         self._img_sample_num = img_sample_num
@@ -381,10 +459,6 @@ class Bimanual_Dataset(torch.utils.data.Dataset):
             np.float32)
         state[:24] += noise
         return state
-
-    def noisy_image(self, image):
-        noise = np.random.normal(0, self._feats_noise_std, size=image.shape).astype(np.float32)
-        return image + noise
 
     def __getitem__(self, ind):
         # Retrieve dataset entries
@@ -558,13 +632,14 @@ class BKL_Dataset(torch.utils.data.Dataset):
             start_ind=0, num_demos=1000000,
             im_size=224, cams=["left_wrist", "right_wrist", "head"], num_steps=1, num_pred=1, look_ahead=0,
             noisy_skip=False, frame_skip=0,
-            joint_noise_std=0.0, joint_noise_std_scale=1.0, feats_noise_std=0.0,
+            joint_noise_std=0.0, joint_noise_std_scale=1.0,
             history_repeating=0.0, img_sample_num=-1,
             prompt_text="pour the sugar", prompt_embedding=None, prompt_embedding_path=None,
             skip_failure=True,
             action_stats_path=None,
             noise_stats_path=None,
             side="both",
+            augment_features=False,
             **kwargs,  # absorb unused args (e.g. joint_noise_mean from old configs)
     ):
         # Load prompt embedding from path if provided
@@ -608,7 +683,7 @@ class BKL_Dataset(torch.utils.data.Dataset):
         _NOISE_DIM = 56
         self._joint_noise_std = np.zeros(_NOISE_DIM, dtype=np.float32) if isinstance(joint_noise_std, (int, float)) and joint_noise_std == 0.0 else np.array(joint_noise_std, dtype=np.float32)
         self._joint_noise_std_scale = joint_noise_std_scale
-        self._feats_noise_std = feats_noise_std
+        self._augment_features = augment_features
         self._history_repeating = history_repeating
         self._img_sample_num = img_sample_num
         self._prompt_text = prompt_text
@@ -617,9 +692,11 @@ class BKL_Dataset(torch.utils.data.Dataset):
         assert side in ("both", "left", "right"), f"side must be 'both', 'left', or 'right', got '{side}'"
         self._side = side
         self._feature_files = []
+        self._num_feat_variants = []  # populated alongside _feature_files during _construct
         self._all_prompts_text = [prompt_text]
         self._dataset = self._construct()
         self._feature_files = np.array(self._feature_files)
+        self._num_feat_variants = np.array(self._num_feat_variants, dtype=np.int32)
 
     def _load_episode_h5(self, h5_path):
         """Load state and raw action data from a single episode HDF5 file.
@@ -728,6 +805,20 @@ class BKL_Dataset(torch.utils.data.Dataset):
             # Feature file (pre-extracted vision features)
             feature_file = os.path.join(ep_path, "features.h5")
             self._feature_files.append(feature_file)
+            # Probe num_variants from the HDF5 attr. Missing attr == legacy
+            # pre-variant-axis file; fail loudly rather than silently mis-read.
+            if os.path.exists(feature_file):
+                with h5py.File(feature_file, 'r') as hf:
+                    if 'num_variants' not in hf['features'].attrs:
+                        raise RuntimeError(
+                            f"{feature_file} is missing the 'num_variants' HDF5 attr. "
+                            f"This is a legacy pre-variant-axis file. Re-run "
+                            f"tools/extract_bkl_features.py to regenerate."
+                        )
+                    nv = int(hf['features'].attrs['num_variants'])
+            else:
+                nv = 1  # file not yet extracted — dataset can still enumerate
+            self._num_feat_variants.append(nv)
 
             visible_cam_keys = self._cam_keys
             if self._side in self.SIDE_EXCLUDED_CAMS:
@@ -871,9 +962,21 @@ class BKL_Dataset(torch.utils.data.Dataset):
         step_inds = [entry['step_ind'] for entry in entries_w_img]
         unique_step_inds = sorted(list(set(step_inds)))
         feature_file = self._feature_files[demo_ind]
+        num_variants = int(self._num_feat_variants[demo_ind])
         if os.path.exists(feature_file):
             with h5py.File(feature_file, 'r') as hf:
-                features = hf['features'][unique_step_inds].copy()
+                dset = hf['features']  # always (K, T, cams, 197, C), K >= 1
+                if not self._augment_features:
+                    # Validation (or training with aug disabled): always variant 0.
+                    features = dset[0, unique_step_inds].copy()
+                else:
+                    # Training: pick an independent variant per camera so that each
+                    # __getitem__ sees K^num_cams possible combinations. With K==1
+                    # this collapses to variant 0 for every cam — no special case.
+                    k_per_cam = [random.randrange(num_variants) for _ in self._cam_keys]
+                    per_cam = [dset[k, unique_step_inds, c:c+1].copy()
+                               for c, k in enumerate(k_per_cam)]
+                    features = np.concatenate(per_cam, axis=1)
             ind_to_feature = {ind: features[i] for i, ind in enumerate(unique_step_inds)}
             im_data_all = [{cam_key: ind_to_feature[ind][self._cam_keys.index(cam_key)]
                            for cam_key in visible_cam_keys}

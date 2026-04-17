@@ -45,7 +45,12 @@ def decode_jpeg_to_rgb(jpeg_bytes):
 
 @torch.no_grad()
 def extract_features(mae_encoder, images_rgb, im_size=224):
-    """Extract MAE mean-pooled features from RGB images. Returns (N, 768)."""
+    """Extract MAE mean-pooled features from RGB images. Returns (N, 768).
+
+    Matches the extraction-time pipeline (tools/extract_bkl_features.py), which
+    writes mean-pooled features to features.h5. The training loop consumes them
+    as-is — no extra pool happens either at train or inference time.
+    """
     batch = np.stack([process_image(img, im_size) for img in images_rgb])
     batch = torch.tensor(batch, dtype=torch.float32).cuda()
     return mae_encoder(batch, mode='mean').cpu().numpy()
@@ -151,16 +156,17 @@ class MVPPolicyServer:
             )
         state_t = torch.tensor(hist_states, dtype=torch.float32).unsqueeze(0).to(self.device)  # (1, L, state_dim)
 
-        # Features: per-camera (L, feat_dim)
+        # Features: per-camera (L, C), mean-pooled at the ViT to match the on-disk
+        # training features. No additional pooling step needed here.
         im_windows = []
         for c in range(self.num_cams):
-            hist_feats_c = np.stack([f[c] for f, _ in self._history])  # (hist_len, feat_dim)
+            hist_feats_c = np.stack([f[c] for f, _ in self._history])  # (hist_len, C)
             if pad_len > 0:
                 hist_feats_c = np.concatenate(
                     [np.tile(hist_feats_c[0:1], (pad_len, 1)), hist_feats_c], axis=0
                 )
             im_windows.append(
-                torch.tensor(hist_feats_c, dtype=torch.float32).unsqueeze(0).to(self.device)  # (1, L, feat_dim)
+                torch.tensor(hist_feats_c, dtype=torch.float32).unsqueeze(0).to(self.device)  # (1, L, C)
             )
 
         prompt_t = self.prompt.unsqueeze(0).repeat(L, 1).unsqueeze(0)  # (1, L, 768)

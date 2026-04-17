@@ -89,7 +89,6 @@ def visualize_attention(cfg):
         joint_noise_mean=[0.] * 24,
         joint_noise_std=[0.] * 24,
         joint_noise_std_scale=cfg.data.joint_noise_std_scale,
-        feats_noise_std=0.0,
         data_filter=cfg.data.data_filter,
         history_repeating=cfg.data.history_repeating,
         img_sample_num=cfg.data.img_sample_num,

@@ -68,6 +68,9 @@ def load_episode_data(episode_dir, frame_skip=1):
     ep_name = os.path.basename(episode_dir)
     h5_path = os.path.join(episode_dir, f"{ep_name}.h5")
     feat_path = os.path.join(episode_dir, "features.h5")
+    # Read features and collapse the variant axis (if any) to slot 0, the
+    # un-augmented baseline. This mirrors BKL_Dataset's validation path so
+    # offline eval never sees an augmented feature.
 
     with h5py.File(h5_path, 'r') as f:
         left_arm_pose = f['left_arm_current_pose'][:].astype(np.float64)
@@ -101,7 +104,9 @@ def load_episode_data(episode_dir, frame_skip=1):
         actions[k, 40:62] = right_hand_cmd[t1]
 
     with h5py.File(feat_path, 'r') as f:
-        features = f['features'][:].astype(np.float32)
+        # features.h5 is (K, T, num_cams, 768) — mean-pooled; offline eval reads
+        # variant 0 (the un-augmented baseline), mirroring BKL_Dataset's val path.
+        features = f['features'][0].astype(np.float32)
 
     return states, actions, features, left_arm_pose, right_arm_pose
 
@@ -271,7 +276,8 @@ def run_offline_eval(model, states, features, prompt_embedding, cfg,
         feats_b = torch.tensor(all_feats[b_start:b_end], dtype=torch.float32).cuda()
 
         prompt_b = prompt_window.unsqueeze(0).expand(B, -1, -1)
-        im_list = [feats_b[:, :, c, :] for c in range(num_cams)]
+        # feats_b shape is (B, L, num_cams, C) — mean-pooled at extraction time.
+        im_list = [feats_b[:, :, c] for c in range(num_cams)]
 
         obs_each_mod = [prompt_b] + im_list + [states_b]
 

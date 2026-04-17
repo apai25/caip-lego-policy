@@ -13,7 +13,6 @@ from omegaconf import OmegaConf
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -60,21 +59,14 @@ def test_epoch(cfg, test_loader, model, meter, cur_epoch):
             causal_mask = causal_mask.unsqueeze(0).repeat(att_mask.shape[0], 1, 1)
             att_mask = torch.logical_or(att_mask, causal_mask)
 
-        # concat image feature into pi_obs, also expand mod_mask
+        # Features arrive mean-pooled from disk as (B, T, C); no in-trainer pool.
+        # attnpool/meanpool actor types run their own learned pool instead.
         if 'attnpool' in cfg.actor.type or 'meanpool' in cfg.actor.type:
             ims = model(im_features=ims,
                         prompts=prompts[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids],
                         cam_ids=list(range(len(cfg.data.cams))),
                         attn_pool_only=True)
-        elif ims[0].dim() == 4:
-            for i, ims_c in enumerate(ims):
-                ims_c = ims_c[:, :, 1:]
-                B, T, N, C = ims_c.shape
-                ims_c = ims_c.reshape(B*T, int(N**0.5), int(N**0.5), C)  # (B*T, H, W, C)
-                ims_c = F.avg_pool2d(ims_c.permute(0, 3, 1, 2), kernel_size=cfg.data.img_downsample).permute(0, 2, 3, 1)  # (B*T, H/2, W/2, C)
-                ims_c = ims_c.reshape(B, T, N // (cfg.data.img_downsample ** 2), C)
-                ims[i] = ims_c
-        all_ims = [torch.zeros(ims_c.shape[0], pi_obs.shape[1], *ims_c.shape[2:]).cuda() for ims_c in ims]  # ims_c could be (B, T, C) or (B, T, N, C)
+        all_ims = [torch.zeros(ims_c.shape[0], pi_obs.shape[1], *ims_c.shape[2:]).cuda() for ims_c in ims]
         for all_ims_c, ims_c in zip(all_ims, ims):
             all_ims_c[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = ims_c
         obs_each_mod = [prompts] + all_ims + [pi_obs]
@@ -169,22 +161,15 @@ def train_epoch(cfg, train_loader, model, optimizer, meter, cur_epoch):
             causal_mask = causal_mask.unsqueeze(0).repeat(att_mask.shape[0], 1, 1)
             att_mask = torch.logical_or(att_mask, causal_mask)
 
-        # prepare input of each modality
+        # Features arrive mean-pooled from disk as (B, T, C); no in-trainer pool.
+        # attnpool/meanpool actor types run their own learned pool instead.
         if 'attnpool' in cfg.actor.type or 'meanpool' in cfg.actor.type:
             ims = model(im_features=ims,
                         prompts=prompts[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids],
                         cam_ids=list(range(len(cfg.data.cams))),
                         attn_pool_only=True)
-        elif ims[0].dim() == 4:
-            for i, ims_c in enumerate(ims):
-                ims_c = ims_c[:, :, 1:]
-                B, T, N, C = ims_c.shape
-                ims_c = ims_c.reshape(B*T, int(N**0.5), int(N**0.5), C)  # (B*T, H, W, C)
-                ims_c = F.avg_pool2d(ims_c.permute(0, 3, 1, 2), kernel_size=cfg.data.img_downsample).permute(0, 2, 3, 1)  # (B*T, H/2, W/2, C)
-                ims_c = ims_c.reshape(B, T, N // (cfg.data.img_downsample ** 2), C)
-                ims[i] = ims_c
 
-        all_ims = [torch.zeros(ims_c.shape[0], pi_obs.shape[1], *ims_c.shape[2:]).cuda() for ims_c in ims]  # ims_c could be (B, T, C) or (B, T, N, C)
+        all_ims = [torch.zeros(ims_c.shape[0], pi_obs.shape[1], *ims_c.shape[2:]).cuda() for ims_c in ims]
         for all_ims_c, ims_c in zip(all_ims, ims):
             all_ims_c[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = ims_c
         obs_each_mod = [prompts] + all_ims + [pi_obs]
@@ -275,7 +260,6 @@ def train(cfg):
             frame_skip=cfg.data.frame_skip,
             joint_noise_std=cfg.data.joint_noise_std,
             joint_noise_std_scale=cfg.data.joint_noise_std_scale,
-            feats_noise_std=cfg.data.feats_noise_std,
             history_repeating=cfg.data.history_repeating,
             img_sample_num=cfg.data.img_sample_num,
             prompt_text=getattr(cfg.data, 'prompt_text', 'pour the sugar'),
@@ -285,6 +269,7 @@ def train(cfg):
             action_stats_path=getattr(cfg.data, 'action_stats_path', None),
             noise_stats_path=getattr(cfg.data, 'noise_stats_path', None),
             side=getattr(cfg.data, 'side', 'both'),
+            augment_features=getattr(cfg.data, 'use_augmented_features', False),
         )
     else:
         train_dataset = Bimanual_Dataset(
@@ -306,7 +291,6 @@ def train(cfg):
             joint_noise_mean=cfg.data.joint_noise_mean,
             joint_noise_std=cfg.data.joint_noise_std,
             joint_noise_std_scale=cfg.data.joint_noise_std_scale,
-            feats_noise_std=cfg.data.feats_noise_std,
             data_filter=cfg.data.data_filter,
             history_repeating=cfg.data.history_repeating,
             img_sample_num=cfg.data.img_sample_num,
@@ -345,15 +329,15 @@ def train(cfg):
                 frame_skip=cfg.data.frame_skip,
                 joint_noise_std=0.0,
                 joint_noise_std_scale=cfg.data.joint_noise_std_scale,
-                feats_noise_std=0.0,
                 history_repeating=cfg.data.history_repeating,
                 img_sample_num=cfg.data.img_sample_num,
                 prompt_text=getattr(cfg.data, 'prompt_text', 'pour the sugar'),
                 prompt_embedding=getattr(cfg.data, 'prompt_embedding', None),
                 prompt_embedding_path=getattr(cfg.data, 'prompt_embedding_path', None),
-    
+
                 action_stats_path=getattr(cfg.data, 'action_stats_path', None),
                 side=getattr(cfg.data, 'side', 'both'),
+                augment_features=False,
             )
         else:
             test_dataset = Bimanual_Dataset(
@@ -375,7 +359,6 @@ def train(cfg):
                 joint_noise_mean=[0.] * 24,
                 joint_noise_std=[0.] * 24,
                 joint_noise_std_scale=cfg.data.joint_noise_std_scale,
-                feats_noise_std=0.0,
                 data_filter=cfg.data.data_filter,
                 history_repeating=cfg.data.history_repeating,
                 img_sample_num=cfg.data.img_sample_num,
