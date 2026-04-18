@@ -32,6 +32,16 @@ from mvp.utils.utils import scaled_all_reduce
 from mvp.utils.utils import masked_mse_loss, masked_l1_loss, masked_ce_loss
 
 
+def mean_pool_patches(ims):
+    """Drop CLS, mean over 196 patch tokens.
+
+    Each ims_c is (B, T, 197, C). Returns list of (B, T, C) tensors. Placeholder
+    for the future learned attention-pool; reproduces the vectors that the old
+    mean-mode extraction wrote directly to disk.
+    """
+    return [x[:, :, 1:].mean(dim=2) for x in ims]
+
+
 @torch.no_grad()
 def test_epoch(cfg, test_loader, model, meter, cur_epoch):
     # Enable eval mode
@@ -59,13 +69,17 @@ def test_epoch(cfg, test_loader, model, meter, cur_epoch):
             causal_mask = causal_mask.unsqueeze(0).repeat(att_mask.shape[0], 1, 1)
             att_mask = torch.logical_or(att_mask, causal_mask)
 
-        # Features arrive mean-pooled from disk as (B, T, C); no in-trainer pool.
-        # attnpool/meanpool actor types run their own learned pool instead.
+        # Features arrive from disk as (B, T, 197, C) — CLS + 196 patch tokens.
+        # attnpool/meanpool actor types consume patch-level features directly via
+        # a learned pool; for plain transformer_concat we drop CLS and mean-pool
+        # in-trainer (placeholder until attention pooling replaces it).
         if 'attnpool' in cfg.actor.type or 'meanpool' in cfg.actor.type:
             ims = model(im_features=ims,
                         prompts=prompts[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids],
                         cam_ids=list(range(len(cfg.data.cams))),
                         attn_pool_only=True)
+        else:
+            ims = mean_pool_patches(ims)  # (B, T, 197, C) -> (B, T, C)
         all_ims = [torch.zeros(ims_c.shape[0], pi_obs.shape[1], *ims_c.shape[2:]).cuda() for ims_c in ims]
         for all_ims_c, ims_c in zip(all_ims, ims):
             all_ims_c[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = ims_c
@@ -161,13 +175,17 @@ def train_epoch(cfg, train_loader, model, optimizer, meter, cur_epoch):
             causal_mask = causal_mask.unsqueeze(0).repeat(att_mask.shape[0], 1, 1)
             att_mask = torch.logical_or(att_mask, causal_mask)
 
-        # Features arrive mean-pooled from disk as (B, T, C); no in-trainer pool.
-        # attnpool/meanpool actor types run their own learned pool instead.
+        # Features arrive from disk as (B, T, 197, C) — CLS + 196 patch tokens.
+        # attnpool/meanpool actor types consume patch-level features directly via
+        # a learned pool; for plain transformer_concat we drop CLS and mean-pool
+        # in-trainer (placeholder until attention pooling replaces it).
         if 'attnpool' in cfg.actor.type or 'meanpool' in cfg.actor.type:
             ims = model(im_features=ims,
                         prompts=prompts[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids],
                         cam_ids=list(range(len(cfg.data.cams))),
                         attn_pool_only=True)
+        else:
+            ims = mean_pool_patches(ims)  # (B, T, 197, C) -> (B, T, C)
 
         all_ims = [torch.zeros(ims_c.shape[0], pi_obs.shape[1], *ims_c.shape[2:]).cuda() for ims_c in ims]
         for all_ims_c, ims_c in zip(all_ims, ims):

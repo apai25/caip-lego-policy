@@ -104,9 +104,12 @@ def load_episode_data(episode_dir, frame_skip=1):
         actions[k, 40:62] = right_hand_cmd[t1]
 
     with h5py.File(feat_path, 'r') as f:
-        # features.h5 is (K, T, num_cams, 768) — mean-pooled; offline eval reads
-        # variant 0 (the un-augmented baseline), mirroring BKL_Dataset's val path.
-        features = f['features'][0].astype(np.float32)
+        # features.h5 is (K, T, num_cams, 197, 768) — CLS + 196 patch tokens.
+        # Offline eval reads variant 0 (clean baseline, mirroring BKL_Dataset's
+        # val path) and mean-pools over the patch axis to match bc.py's
+        # mean_pool_patches step. Result shape: (T, num_cams, 768).
+        features = f['features'][0]
+        features = features[..., 1:, :].mean(axis=-2).astype(np.float32)
 
     return states, actions, features, left_arm_pose, right_arm_pose
 

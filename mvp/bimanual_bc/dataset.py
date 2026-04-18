@@ -982,8 +982,9 @@ class BKL_Dataset(torch.utils.data.Dataset):
                            for cam_key in visible_cam_keys}
                            for ind in step_inds]
         else:
-            # No features yet — return zeros (for testing data pipeline without vision)
-            im_data_all = [{cam_key: np.zeros(768, dtype=np.float32) for cam_key in visible_cam_keys}
+            # No features yet — return zeros (for testing data pipeline without vision).
+            # Shape matches one (variant, cam, frame)'s all-patches feature: (197, 768).
+            im_data_all = [{cam_key: np.zeros((197, 768), dtype=np.float32) for cam_key in visible_cam_keys}
                            for _ in step_inds]
 
         # Process images/features

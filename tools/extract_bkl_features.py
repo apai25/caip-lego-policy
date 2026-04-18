@@ -9,8 +9,11 @@ Each BKL episode directory contains:
   - {episode_name}.h5
 
 This script decodes the MP4 frames, runs them through a frozen ViT encoder in
-mean-pooled mode (CLS token dropped, mean over the 196 patch tokens), and saves
-the resulting (K, T, num_cams, 768) feature tensor to features.h5.
+all-patches mode (CLS token + 196 patch tokens — no extraction-time pooling),
+and saves the resulting (K, T, num_cams, 197, 768) feature tensor to features.h5.
+Pooling is applied at training / inference time inside mvp/bimanual_bc/bc.py
+(see mean_pool_patches), so the patch axis is preserved on disk for future
+learned-pool variants (attention pooling, etc).
 
 With --num-variants K > 1, writes K feature variants per frame for image-space
 augmentation. Slot 0 is ALWAYS the identity (plain process_image); slots 1..K-1
@@ -19,7 +22,7 @@ RNG draws per (variant, camera, frame). Variant 0 identity is the invariant the
 training-time validation path reads — do not change it.
 
 Output HDF5 layout:
-  dataset 'features': shape (K, T, num_cams, 768)   (always — K >= 1)
+  dataset 'features': shape (K, T, num_cams, 197, 768)   (always — K >= 1)
   attributes on 'features':
     num_variants: int   (K)
     color_jitter: bool
@@ -115,20 +118,21 @@ def preprocess_camera(frames, im_size, num_variants, aug_cfg, base_seed, pool, t
 
 @torch.no_grad()
 def gpu_infer(model, stack, gpu_batch, gpu_lock, timing=None):
-    """Phase 2 (GPU, serialized via gpu_lock): (K*T, 3, H, W) -> (K*T, 768).
+    """Phase 2 (GPU, serialized via gpu_lock):
+    (K*T, 3, H, W) -> (K*T, 197, 768)   # 1 CLS + 196 patch tokens per image.
 
     gpu_lock ensures only one episode/camera is on the GPU at a time even when
     multiple episodes are in flight; CPU workers from other episodes can keep
     running while this one holds the lock.
     """
     total = stack.shape[0]
-    out = np.empty((total, 768), dtype=np.float32)
+    out = np.empty((total, 197, 768), dtype=np.float32)
     t0 = time.perf_counter()
     with gpu_lock:
         for i in range(0, total, gpu_batch):
             chunk = stack[i:i + gpu_batch]
             batch_t = torch.from_numpy(chunk).cuda(non_blocking=True)
-            feats = model(batch_t, mode='mean')
+            feats = model(batch_t, mode='all')  # (B, 197, 768)
             out[i:i + gpu_batch] = feats.cpu().numpy()
         torch.cuda.synchronize()
     if timing is not None:
@@ -181,9 +185,10 @@ def process_episode(model, ep_dir, cams, im_size, batch_size,
                                   base_seed, cpu_pool, local_timing)
         feats_flat = gpu_infer(model, stack, batch_size, gpu_lock, local_timing)
         del stack  # free ~4.3GB before stacking next camera
-        cam_features.append(feats_flat.reshape(num_variants, len(frames), -1))
+        # feats_flat: (K*T, 197, 768) -> (K, T, 197, 768)
+        cam_features.append(feats_flat.reshape(num_variants, len(frames), 197, -1))
 
-    features = np.stack(cam_features, axis=2)  # (K, T, num_cams, C)
+    features = np.stack(cam_features, axis=2)  # (K, T, num_cams, 197, 768)
     if fp16:
         features = features.astype(np.float16)
 
@@ -216,7 +221,8 @@ def main():
                         help="CPU threads for preprocess + augmentation (cv2/numpy release the GIL)")
     parser.add_argument("--episode-concurrency", dest="episode_concurrency", type=int, default=2,
                         help="Max episodes in flight at once per GPU. Each holds ~4.3GB of "
-                             "preprocessed fp32 in RAM (K*T*3cams*3*224*224*4). Set based on RAM.")
+                             "preprocessed fp32 + ~13GB of output features (K*T*3cams*197*768*4) "
+                             "in RAM. Use --fp16 to halve the output size; lower this when RAM-limited.")
     parser.add_argument("--gpus", type=int, default=1,
                         help="Number of GPUs to shard episodes across. When > 1, the parent forks "
                              "one subprocess per GPU (CUDA_VISIBLE_DEVICES pinned) and each worker "

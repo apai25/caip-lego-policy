@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from mvp.vision_model.vision_encoder import Encoder
 from mvp.bimanual_bc.dataset import process_image, BKL_Dataset
+from mvp.bimanual_bc.bc import mean_pool_patches
 from tools.offline_eval_bkl import build_model
 
 
@@ -45,15 +46,16 @@ def decode_jpeg_to_rgb(jpeg_bytes):
 
 @torch.no_grad()
 def extract_features(mae_encoder, images_rgb, im_size=224):
-    """Extract MAE mean-pooled features from RGB images. Returns (N, 768).
+    """Extract MAE all-patches features from RGB images. Returns (N, 197, 768).
 
     Matches the extraction-time pipeline (tools/extract_bkl_features.py), which
-    writes mean-pooled features to features.h5. The training loop consumes them
-    as-is — no extra pool happens either at train or inference time.
+    writes CLS+patch features (N=197) to features.h5. Pooling over the patch
+    axis happens in predict() via mean_pool_patches, matching bc.py's training
+    path exactly.
     """
     batch = np.stack([process_image(img, im_size) for img in images_rgb])
     batch = torch.tensor(batch, dtype=torch.float32).cuda()
-    return mae_encoder(batch, mode='mean').cpu().numpy()
+    return mae_encoder(batch, mode='all').cpu().numpy()
 
 
 class MVPPolicyServer:
@@ -156,18 +158,25 @@ class MVPPolicyServer:
             )
         state_t = torch.tensor(hist_states, dtype=torch.float32).unsqueeze(0).to(self.device)  # (1, L, state_dim)
 
-        # Features: per-camera (L, C), mean-pooled at the ViT to match the on-disk
-        # training features. No additional pooling step needed here.
+        # Features: per-camera (L, 197, C) from the ViT's all-patches mode. Pad
+        # by repeating the earliest observation to fill the sliding window.
         im_windows = []
         for c in range(self.num_cams):
-            hist_feats_c = np.stack([f[c] for f, _ in self._history])  # (hist_len, C)
+            hist_feats_c = np.stack([f[c] for f, _ in self._history])  # (hist_len, 197, C)
             if pad_len > 0:
                 hist_feats_c = np.concatenate(
-                    [np.tile(hist_feats_c[0:1], (pad_len, 1)), hist_feats_c], axis=0
+                    [np.tile(hist_feats_c[0:1], (pad_len, 1, 1)), hist_feats_c], axis=0
                 )
             im_windows.append(
-                torch.tensor(hist_feats_c, dtype=torch.float32).unsqueeze(0).to(self.device)  # (1, L, C)
+                torch.tensor(hist_feats_c, dtype=torch.float32).unsqueeze(0).to(self.device)  # (1, L, 197, C)
             )
+
+        # Match bc.py's pooling path exactly: drop CLS + mean over patches for
+        # plain transformer_concat actors; pass 4-D through to attnpool/meanpool.
+        if 'attnpool' in self.cfg.actor.type or 'meanpool' in self.cfg.actor.type:
+            pass  # actor consumes (1, L, 197, C) internally
+        else:
+            im_windows = mean_pool_patches(im_windows)  # (1, L, 197, C) -> (1, L, C)
 
         prompt_t = self.prompt.unsqueeze(0).repeat(L, 1).unsqueeze(0)  # (1, L, 768)
 
