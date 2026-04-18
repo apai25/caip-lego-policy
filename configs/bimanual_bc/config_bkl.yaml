@@ -55,8 +55,8 @@ data:
   #   min:  drop CLS, min over the 196 patch tokens. No learnable params.
   #   cls:  use the CLS token only. No learnable params.
   #   attn: single learned query token per camera cross-attending over all
-  #         197 tokens (1 MHA layer + residual MLP, ~2.5M params per cam).
-  img_pool_type: mean
+  #         197 tokens (1 MHA layer + residual MLP, ~4.7M params per cam).
+  img_pool_type: attn
 
 actor:
   type: "transformer_concat"
