@@ -106,10 +106,9 @@ def load_episode_data(episode_dir, frame_skip=1):
     with h5py.File(feat_path, 'r') as f:
         # features.h5 is (K, T, num_cams, 197, 768) — CLS + 196 patch tokens.
         # Offline eval reads variant 0 (clean baseline, mirroring BKL_Dataset's
-        # val path) and mean-pools over the patch axis to match bc.py's
-        # mean_pool_patches step. Result shape: (T, num_cams, 768).
-        features = f['features'][0]
-        features = features[..., 1:, :].mean(axis=-2).astype(np.float32)
+        # val path). Keep the patch axis; pooling happens inside the policy
+        # in run_offline_eval via model(..., attn_pool_only=True).
+        features = f['features'][0].astype(np.float32)
 
     return states, actions, features, left_arm_pose, right_arm_pose
 
@@ -134,6 +133,9 @@ def build_model(cfg):
             policy_cfg=cfg.transformer_concat,
             normalize_input=cfg.transformer_concat.normalize_input,
             normalize_bn_cls=nn.BatchNorm1d,
+            pool_type=getattr(cfg.data, 'img_pool_type', 'mean'),
+            num_cams=len(cfg.data.cams),
+            im_dim=cfg.actor.im_dim,
         )
     elif cfg.actor.type == "transformer_concat_attnpool":
         model = ActorTransformerConcatAttnPooling_Bimanual(
@@ -279,8 +281,15 @@ def run_offline_eval(model, states, features, prompt_embedding, cfg,
         feats_b = torch.tensor(all_feats[b_start:b_end], dtype=torch.float32).cuda()
 
         prompt_b = prompt_window.unsqueeze(0).expand(B, -1, -1)
-        # feats_b shape is (B, L, num_cams, C) — mean-pooled at extraction time.
-        im_list = [feats_b[:, :, c] for c in range(num_cams)]
+        # feats_b shape is (B, L, num_cams, 197, C). Reduce per-cam via the
+        # policy's patch pool (same code path as bc.py training / serve).
+        im_list_4d = [feats_b[:, :, c] for c in range(num_cams)]  # each (B, L, 197, C)
+        im_list = model(
+            im_features=im_list_4d,
+            prompts=prompt_b.unsqueeze(-2),  # (B, L, 1, C)
+            cam_ids=list(range(num_cams)),
+            attn_pool_only=True,
+        )  # each (B, L, C)
 
         obs_each_mod = [prompt_b] + im_list + [states_b]
 

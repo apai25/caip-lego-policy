@@ -264,16 +264,45 @@ class ActorTransformerConcat(nn.Module):
 
 
 class ActorTransformerConcat_Bimanual(ActorTransformerConcat):
+    """Plain concat-transformer actor with an optional pluggable patch pool.
+
+    If constructed with `pool_type` (one of mean/max/min/cls/attn), the
+    actor owns a per-camera `PerCamPool` and exposes `attn_pool_only=True`
+    to reduce 4-D (B, T, 197, C) per-cam features to 3-D (B, T, C) before
+    the concat-transformer consumes them. When `pool_type` is None the
+    pool is absent and callers must pre-pool before passing obs_each_mod.
+    """
 
     def __init__(
         self,
         output_dims,
+        pool_type=None,
+        num_cams=None,
+        im_dim=None,
         **kwargs,
     ):
         super(ActorTransformerConcat_Bimanual, self).__init__(actions_shape=sum(output_dims), **kwargs)
         self.output_dims = output_dims
+        if pool_type is not None:
+            assert num_cams is not None and im_dim is not None, \
+                "pool_type requires num_cams and im_dim"
+            from mvp.bimanual_bc.pool import PerCamPool
+            self.patch_pool = PerCamPool(pool_type, num_cams, im_dim)
+        else:
+            self.patch_pool = None
 
-    def forward(self, obs_each_mod=None, mask_each_mod=None, attn_mask=None, **kwargs):
+    def forward(self, obs_each_mod=None, mask_each_mod=None, attn_mask=None,
+                im_features=None, cam_ids=None, attn_pool_only=False, **kwargs):
+        # Pool-only entrypoint: callers pass 4-D per-cam features and get
+        # 3-D back. Matches the contract used by the legacy attn/mean-pool
+        # actor variants so bc.py / serve / offline_eval can share a single
+        # pooling call regardless of which actor class is in use.
+        if attn_pool_only:
+            assert self.patch_pool is not None, \
+                "ActorTransformerConcat_Bimanual was built without a patch_pool; " \
+                "set cfg.data.img_pool_type"
+            return self.patch_pool(im_features)
+
         observations = torch.cat(obs_each_mod, dim=-1).transpose(0, 1)
 
         L, B, C = observations.shape

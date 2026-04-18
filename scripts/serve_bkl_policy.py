@@ -35,7 +35,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from mvp.vision_model.vision_encoder import Encoder
 from mvp.bimanual_bc.dataset import process_image, BKL_Dataset
-from mvp.bimanual_bc.bc import mean_pool_patches
 from tools.offline_eval_bkl import build_model
 
 
@@ -50,8 +49,8 @@ def extract_features(mae_encoder, images_rgb, im_size=224):
 
     Matches the extraction-time pipeline (tools/extract_bkl_features.py), which
     writes CLS+patch features (N=197) to features.h5. Pooling over the patch
-    axis happens in predict() via mean_pool_patches, matching bc.py's training
-    path exactly.
+    axis happens inside the policy in predict() via the policy's own patch
+    pool (driven by cfg.data.img_pool_type), matching bc.py's training path.
     """
     batch = np.stack([process_image(img, im_size) for img in images_rgb])
     batch = torch.tensor(batch, dtype=torch.float32).cuda()
@@ -171,14 +170,18 @@ class MVPPolicyServer:
                 torch.tensor(hist_feats_c, dtype=torch.float32).unsqueeze(0).to(self.device)  # (1, L, 197, C)
             )
 
-        # Match bc.py's pooling path exactly: drop CLS + mean over patches for
-        # plain transformer_concat actors; pass 4-D through to attnpool/meanpool.
-        if 'attnpool' in self.cfg.actor.type or 'meanpool' in self.cfg.actor.type:
-            pass  # actor consumes (1, L, 197, C) internally
-        else:
-            im_windows = mean_pool_patches(im_windows)  # (1, L, 197, C) -> (1, L, C)
-
         prompt_t = self.prompt.unsqueeze(0).repeat(L, 1).unsqueeze(0)  # (1, L, 768)
+
+        # Reduce (1, L, 197, C) -> (1, L, C) per cam via the policy's patch
+        # pool (same code path as bc.py training). The prompt is passed in
+        # because the legacy prompt-conditioned Attn_Pool actor uses it; the
+        # new ActorTransformerConcat_Bimanual pool ignores it.
+        im_windows = self.policy(
+            im_features=im_windows,
+            prompts=prompt_t.unsqueeze(-2),  # (1, L, 1, 768)
+            cam_ids=list(range(self.num_cams)),
+            attn_pool_only=True,
+        )
 
         obs_each_mod = [prompt_t] + im_windows + [state_t]
 

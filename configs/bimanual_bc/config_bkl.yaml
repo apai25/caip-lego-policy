@@ -48,6 +48,16 @@ data:
   # flags (--num-variants, --color-jitter, --crop-jitter, ...).
   use_augmented_features: True
 
+  # How to reduce the 197 patch tokens per (camera, frame) to a single 768-D
+  # vector. The pool module lives inside the policy (checkpointed with it).
+  #   mean: drop CLS, average the 196 patch tokens. No learnable params.
+  #   max:  drop CLS, max over the 196 patch tokens. No learnable params.
+  #   min:  drop CLS, min over the 196 patch tokens. No learnable params.
+  #   cls:  use the CLS token only. No learnable params.
+  #   attn: single learned query token per camera cross-attending over all
+  #         197 tokens (1 MHA layer + residual MLP, ~2.5M params per cam).
+  img_pool_type: mean
+
 actor:
   type: "transformer_concat"
   num_steps: 1
