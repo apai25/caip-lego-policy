@@ -119,7 +119,7 @@ test:
   freq: 20
 
 wandb:
-  name: bkl_pick-place-egg_vitb-mae_skip1_pred16_obs1_aug-k8-colorcrop_bodyframe-6drot_actonly_noproprio_right_041626
+  name: bkl_pick-place-egg_vitb-mae_skip1_pred16_obs1_attnpool_aug-k8-colorcrop_bodyframe-6drot_actonly_noproprio_right_041926
   project: mvp-generalize
   mode: online
 

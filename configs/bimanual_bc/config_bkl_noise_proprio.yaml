@@ -119,7 +119,7 @@ test:
   freq: 20
 
 wandb:
-  name: bkl_pick-place-egg_vitb-mae_skip1_pred16_obs1_attnpool_noimgaug_noise1x_bodyframe-6drot_actonly_proprio_right_041726
+  name: bkl_pick-place-egg_vitb-mae_skip1_pred16_obs1_attnpool_noimgaug_noise1x_bodyframe-6drot_actonly_proprio_right_041926
   project: mvp-generalize
   mode: online
 
