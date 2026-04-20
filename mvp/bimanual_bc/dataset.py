@@ -696,6 +696,12 @@ class BKL_Dataset(torch.utils.data.Dataset):
         self._all_prompts_text = [prompt_text]
         self._dataset = self._construct()
         self._feature_files = np.array(self._feature_files)
+        # Per-worker cache of open h5py datasets. Populated lazily in
+        # __getitem__ so each DataLoader worker opens files after fork.
+        # Opening an h5py file is expensive (metadata parsing on Lustre);
+        # reusing the handle across __getitem__ calls is the biggest single
+        # win when the page cache is already warm.
+        self._h5_dsets = {}
         self._num_feat_variants = np.array(self._num_feat_variants, dtype=np.int32)
 
     def _load_episode_h5(self, h5_path):
@@ -930,6 +936,20 @@ class BKL_Dataset(torch.utils.data.Dataset):
 
         return state
 
+    def _features_dset(self, demo_ind):
+        """Return an open h5py Dataset for this demo's features, memoized per
+        worker. Opens on first touch and reuses thereafter — kills the
+        per-__getitem__ h5py.File open + metadata parsing cost, which is the
+        dominant overhead when the page cache is already warm.
+        """
+        entry = self._h5_dsets.get(demo_ind)
+        if entry is None:
+            hf = h5py.File(self._feature_files[demo_ind], 'r', libver='latest', swmr=False)
+            # Keep both refs so the file stays alive as long as the dset does.
+            entry = (hf, hf['features'])
+            self._h5_dsets[demo_ind] = entry
+        return entry[1]
+
     def __getitem__(self, ind):
         # Retrieve dataset entries
         demo_ind = self._dataset[ind]["demo_ind"]
@@ -964,19 +984,18 @@ class BKL_Dataset(torch.utils.data.Dataset):
         feature_file = self._feature_files[demo_ind]
         num_variants = int(self._num_feat_variants[demo_ind])
         if os.path.exists(feature_file):
-            with h5py.File(feature_file, 'r') as hf:
-                dset = hf['features']  # always (K, T, cams, 197, C), K >= 1
-                if not self._augment_features:
-                    # Validation (or training with aug disabled): always variant 0.
-                    features = dset[0, unique_step_inds].copy()
-                else:
-                    # Training: pick an independent variant per camera so that each
-                    # __getitem__ sees K^num_cams possible combinations. With K==1
-                    # this collapses to variant 0 for every cam — no special case.
-                    k_per_cam = [random.randrange(num_variants) for _ in self._cam_keys]
-                    per_cam = [dset[k, unique_step_inds, c:c+1].copy()
-                               for c, k in enumerate(k_per_cam)]
-                    features = np.concatenate(per_cam, axis=1)
+            dset = self._features_dset(demo_ind)  # (K, T, cams, 197, C), K >= 1
+            if not self._augment_features:
+                # Validation (or training with aug disabled): always variant 0.
+                features = dset[0, unique_step_inds]
+            else:
+                # Training: pick an independent variant per camera so that each
+                # __getitem__ sees K^num_cams possible combinations. With K==1
+                # this collapses to variant 0 for every cam — no special case.
+                k_per_cam = [random.randrange(num_variants) for _ in self._cam_keys]
+                per_cam = [dset[k, unique_step_inds, c:c+1]
+                           for c, k in enumerate(k_per_cam)]
+                features = np.concatenate(per_cam, axis=1)
             ind_to_feature = {ind: features[i] for i, ind in enumerate(unique_step_inds)}
             im_data_all = [{cam_key: ind_to_feature[ind][self._cam_keys.index(cam_key)]
                            for cam_key in visible_cam_keys}

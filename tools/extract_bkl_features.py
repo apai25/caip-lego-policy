@@ -192,6 +192,11 @@ def process_episode(model, ep_dir, cams, im_size, batch_size,
     if fp16:
         features = features.astype(np.float16)
 
+    # Contiguous layout (no chunks). Benched faster here than any chunked
+    # layout we tried — h5py's chunk cache (default 1 MB) doesn't fit a
+    # single (1, 16, 1, 197, 768) chunk (≈4.8 MB fp16), so chunked reads
+    # miss the cache every time and pay chunk-machinery overhead on top of
+    # the raw seek. Contiguous hyperslab reads go straight to the offset.
     with h5py.File(output_path, 'w') as hf:
         dset = hf.create_dataset('features', data=features)
         dset.attrs['num_variants'] = num_variants
@@ -230,7 +235,9 @@ def main():
                              "GPUs run independently — no cross-GPU sync.")
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--end", type=int, default=-1)
-    parser.add_argument("--fp16", action="store_true", default=False)
+    parser.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True,
+                        help="Store features as fp16 (halves disk use and I/O; tiny precision "
+                             "loss vs fp32 that trains cast to fp32 anyway). Pass --no-fp16 for fp32.")
 
     # K-variant augmentation
     parser.add_argument("--num-variants", dest="num_variants", type=int, default=1,
