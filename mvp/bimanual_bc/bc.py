@@ -59,66 +59,69 @@ def test_epoch(cfg, test_loader, model, meter, cur_epoch):
             causal_mask = causal_mask.unsqueeze(0).repeat(att_mask.shape[0], 1, 1)
             att_mask = torch.logical_or(att_mask, causal_mask)
 
-        # Features arrive from disk as (B, T, 197, C). Reduce per-cam to
-        # (B, T, C) via the actor's patch pool. Every actor that handles
-        # patch-level inputs exposes `attn_pool_only=True` as a pool-only
-        # entrypoint — ActorTransformerConcat_Bimanual's pool is driven by
-        # cfg.data.img_pool_type; the legacy attnpool/meanpool actors use
-        # their own prompt-conditioned Attn_Pool / simple mean.
-        ims = model(im_features=ims,
-                    prompts=prompts[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids],
-                    cam_ids=list(range(len(cfg.data.cams))),
-                    attn_pool_only=True)
-        all_ims = [torch.zeros(ims_c.shape[0], pi_obs.shape[1], *ims_c.shape[2:]).cuda() for ims_c in ims]
-        for all_ims_c, ims_c in zip(all_ims, ims):
-            all_ims_c[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = ims_c
-        obs_each_mod = [prompts] + all_ims + [pi_obs]
+        # bf16 autocast — mirrors train_epoch. Wrapped in @torch.no_grad()
+        # already; autocast only changes forward-op dtypes.
+        with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+            # Features arrive from disk as (B, T, 197, C). Reduce per-cam to
+            # (B, T, C) via the actor's patch pool. Every actor that handles
+            # patch-level inputs exposes `attn_pool_only=True` as a pool-only
+            # entrypoint — ActorTransformerConcat_Bimanual's pool is driven by
+            # cfg.data.img_pool_type; the legacy attnpool/meanpool actors use
+            # their own prompt-conditioned Attn_Pool / simple mean.
+            ims = model(im_features=ims,
+                        prompts=prompts[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids],
+                        cam_ids=list(range(len(cfg.data.cams))),
+                        attn_pool_only=True)
+            all_ims = [torch.zeros(ims_c.shape[0], pi_obs.shape[1], *ims_c.shape[2:], dtype=ims_c.dtype, device=ims_c.device) for ims_c in ims]
+            for all_ims_c, ims_c in zip(all_ims, ims):
+                all_ims_c[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = ims_c
+            obs_each_mod = [prompts] + all_ims + [pi_obs]
 
-        # prepare mask for each modality
-        prompt_mask = torch.ones_like(prompts).cuda()
-        img_masks = [torch.zeros(all_ims_c.shape[0], pi_obs.shape[1], all_ims_c.shape[-1]).cuda() for all_ims_c in all_ims]
-        cam_masks = visible_cam_mask.split(1, dim=-1)
-        for img_mask, cam_mask in zip(img_masks, cam_masks):
-            img_mask[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = 1
-            img_mask.mul_(cam_mask[..., None])
-        _act_dim = pi_act.shape[-1]
-        state_mask = mod_mask[:, :, :-_act_dim]
-        action_mask = mod_mask[:, :, -_act_dim:]
-        if not getattr(cfg.data, 'use_proprio', True):
-            state_mask = torch.zeros_like(state_mask)
-        mask_each_mod = [prompt_mask] + img_masks + [state_mask]
+            # prepare mask for each modality
+            prompt_mask = torch.ones_like(prompts).cuda()
+            img_masks = [torch.zeros(all_ims_c.shape[0], pi_obs.shape[1], all_ims_c.shape[-1]).cuda() for all_ims_c in all_ims]
+            cam_masks = visible_cam_mask.split(1, dim=-1)
+            for img_mask, cam_mask in zip(img_masks, cam_masks):
+                img_mask[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = 1
+                img_mask.mul_(cam_mask[..., None])
+            _act_dim = pi_act.shape[-1]
+            state_mask = mod_mask[:, :, :-_act_dim]
+            action_mask = mod_mask[:, :, -_act_dim:]
+            if not getattr(cfg.data, 'use_proprio', True):
+                state_mask = torch.zeros_like(state_mask)
+            mask_each_mod = [prompt_mask] + img_masks + [state_mask]
 
-        # model feedforward
-        preds_each_mod = model(obs_each_mod=[obs[:, :cfg.actor.num_steps] for obs in obs_each_mod],
-                               mask_each_mod=[mask[:, :cfg.actor.num_steps] for mask in mask_each_mod],
-                               attn_mask=att_mask,
-                               img_selected_ids=img_selected_ids[:, :cfg.data.img_sample_num])
+            # model feedforward
+            preds_each_mod = model(obs_each_mod=[obs[:, :cfg.actor.num_steps] for obs in obs_each_mod],
+                                   mask_each_mod=[mask[:, :cfg.actor.num_steps] for mask in mask_each_mod],
+                                   attn_mask=att_mask,
+                                   img_selected_ids=img_selected_ids[:, :cfg.data.img_sample_num])
 
-        # prediction loss
-        targets_each_mod = [obs[:, -cfg.actor.num_pred:] for obs in obs_each_mod[:-1]] + [pi_obs_noiseless[:, -cfg.actor.num_pred:]] + [pi_act[:, -cfg.actor.num_pred-1:-1]]
-        loss_mask_each_mod = [mask[:, -cfg.actor.num_pred:] for mask in mask_each_mod] + [action_mask[:, -cfg.actor.num_pred - 1:-1]]
-        use_ce_loss_each_mod = [False for _ in range(len(targets_each_mod))]
-        loss_each_mod = [masked_l1_loss(preds, targets, mask) if not use_ce_loss else masked_ce_loss(preds, targets, mask)
-                         for preds, targets, mask, use_ce_loss in zip(preds_each_mod, targets_each_mod, loss_mask_each_mod, use_ce_loss_each_mod)]
+            # prediction loss
+            targets_each_mod = [obs[:, -cfg.actor.num_pred:] for obs in obs_each_mod[:-1]] + [pi_obs_noiseless[:, -cfg.actor.num_pred:]] + [pi_act[:, -cfg.actor.num_pred-1:-1]]
+            loss_mask_each_mod = [mask[:, -cfg.actor.num_pred:] for mask in mask_each_mod] + [action_mask[:, -cfg.actor.num_pred - 1:-1]]
+            use_ce_loss_each_mod = [False for _ in range(len(targets_each_mod))]
+            loss_each_mod = [masked_l1_loss(preds, targets, mask) if not use_ce_loss else masked_ce_loss(preds, targets, mask)
+                             for preds, targets, mask, use_ce_loss in zip(preds_each_mod, targets_each_mod, loss_mask_each_mod, use_ce_loss_each_mod)]
 
-        if 'diffusion' in cfg.actor.type:
-            loss_each_mod[-1] = model.module.compute_diffusion_loss(preds_each_mod[-1], targets_each_mod[-1], loss_mask_each_mod[-1])
+            if 'diffusion' in cfg.actor.type:
+                loss_each_mod[-1] = model.module.compute_diffusion_loss(preds_each_mod[-1], targets_each_mod[-1], loss_mask_each_mod[-1])
 
-        prompt_loss = loss_each_mod[0]
-        num_cams = len(cfg.data.cams)
-        img_losses = loss_each_mod[1:1 + num_cams]
-        img_loss = sum(img_losses) / num_cams
-        state_loss = loss_each_mod[-2]
-        action_loss = loss_each_mod[-1]
-        print('##########')
-        print('Prompt loss:', prompt_loss)
-        for i, cam in enumerate(cfg.data.cams):
-            print(f'Image ({cam}) loss:', img_losses[i])
-        print('State loss:', state_loss)
-        print('Action loss:', action_loss)
-        print('##########')
+            prompt_loss = loss_each_mod[0]
+            num_cams = len(cfg.data.cams)
+            img_losses = loss_each_mod[1:1 + num_cams]
+            img_loss = sum(img_losses) / num_cams
+            state_loss = loss_each_mod[-2]
+            action_loss = loss_each_mod[-1]
+            print('##########')
+            print('Prompt loss:', prompt_loss)
+            for i, cam in enumerate(cfg.data.cams):
+                print(f'Image ({cam}) loss:', img_losses[i])
+            print('State loss:', state_loss)
+            print('Action loss:', action_loss)
+            print('##########')
 
-        loss = cfg.actor.prompt_loss_weight * prompt_loss + 0 * state_loss + cfg.actor.state_loss_weight * img_loss + action_loss
+            loss = cfg.actor.prompt_loss_weight * prompt_loss + 0 * state_loss + cfg.actor.state_loss_weight * img_loss + action_loss
 
         # Sync stats across GPUs
         loss = scaled_all_reduce([loss])[0].item()
@@ -164,60 +167,64 @@ def train_epoch(cfg, train_loader, model, optimizer, meter, cur_epoch):
             causal_mask = causal_mask.unsqueeze(0).repeat(att_mask.shape[0], 1, 1)
             att_mask = torch.logical_or(att_mask, causal_mask)
 
-        # See test_epoch: unified pool entrypoint across all actor variants.
-        ims = model(im_features=ims,
-                    prompts=prompts[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids],
-                    cam_ids=list(range(len(cfg.data.cams))),
-                    attn_pool_only=True)
+        # bf16 autocast for the whole fwd + loss. BatchNorm in obs_normalizer
+        # stays in fp32 internally (PyTorch handles that). bf16 has enough
+        # dynamic range that no GradScaler is needed for the backward.
+        with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+            # See test_epoch: unified pool entrypoint across all actor variants.
+            ims = model(im_features=ims,
+                        prompts=prompts[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids],
+                        cam_ids=list(range(len(cfg.data.cams))),
+                        attn_pool_only=True)
 
-        all_ims = [torch.zeros(ims_c.shape[0], pi_obs.shape[1], *ims_c.shape[2:]).cuda() for ims_c in ims]
-        for all_ims_c, ims_c in zip(all_ims, ims):
-            all_ims_c[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = ims_c
-        obs_each_mod = [prompts] + all_ims + [pi_obs]
+            all_ims = [torch.zeros(ims_c.shape[0], pi_obs.shape[1], *ims_c.shape[2:], dtype=ims_c.dtype, device=ims_c.device) for ims_c in ims]
+            for all_ims_c, ims_c in zip(all_ims, ims):
+                all_ims_c[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = ims_c
+            obs_each_mod = [prompts] + all_ims + [pi_obs]
 
-        # prepare mask for each modality
-        prompt_mask = torch.ones_like(prompts).cuda()
-        img_masks = [torch.zeros(all_ims_c.shape[0], pi_obs.shape[1], all_ims_c.shape[-1]).cuda() for all_ims_c in all_ims]
-        cam_masks = visible_cam_mask.split(1, dim=-1)
-        for img_mask, cam_mask in zip(img_masks, cam_masks):
-            img_mask[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = 1
-            img_mask.mul_(cam_mask[..., None])
-        _act_dim = pi_act.shape[-1]
-        state_mask = mod_mask[:, :, :-_act_dim]
-        action_mask = mod_mask[:, :, -_act_dim:]
-        # Zero out proprio mask if use_proprio is False
-        if not getattr(cfg.data, 'use_proprio', True):
-            state_mask = torch.zeros_like(state_mask)
-        mask_each_mod = [prompt_mask] + img_masks + [state_mask]
+            # prepare mask for each modality
+            prompt_mask = torch.ones_like(prompts).cuda()
+            img_masks = [torch.zeros(all_ims_c.shape[0], pi_obs.shape[1], all_ims_c.shape[-1]).cuda() for all_ims_c in all_ims]
+            cam_masks = visible_cam_mask.split(1, dim=-1)
+            for img_mask, cam_mask in zip(img_masks, cam_masks):
+                img_mask[torch.arange(img_selected_ids.shape[0]).unsqueeze(1), img_selected_ids] = 1
+                img_mask.mul_(cam_mask[..., None])
+            _act_dim = pi_act.shape[-1]
+            state_mask = mod_mask[:, :, :-_act_dim]
+            action_mask = mod_mask[:, :, -_act_dim:]
+            # Zero out proprio mask if use_proprio is False
+            if not getattr(cfg.data, 'use_proprio', True):
+                state_mask = torch.zeros_like(state_mask)
+            mask_each_mod = [prompt_mask] + img_masks + [state_mask]
 
-        # model feedforward
-        preds_each_mod = model(obs_each_mod=[obs[:, :cfg.actor.num_steps] for obs in obs_each_mod],
-                               mask_each_mod=[mask[:, :cfg.actor.num_steps] for mask in mask_each_mod],
-                               attn_mask=att_mask,
-                               img_selected_ids=img_selected_ids[:, :cfg.data.img_sample_num])
+            # model feedforward
+            preds_each_mod = model(obs_each_mod=[obs[:, :cfg.actor.num_steps] for obs in obs_each_mod],
+                                   mask_each_mod=[mask[:, :cfg.actor.num_steps] for mask in mask_each_mod],
+                                   attn_mask=att_mask,
+                                   img_selected_ids=img_selected_ids[:, :cfg.data.img_sample_num])
 
-        # prediction loss
-        targets_each_mod = [obs[:, -cfg.actor.num_pred:] for obs in obs_each_mod[:-1]] + [pi_obs_noiseless[:, -cfg.actor.num_pred:]] + [pi_act[:, -cfg.actor.num_pred-1:-1]]
-        loss_mask_each_mod = [mask[:, -cfg.actor.num_pred:] for mask in mask_each_mod] + [action_mask[:, -cfg.actor.num_pred-1:-1]]
-        use_ce_loss_each_mod = [False for _ in range(len(targets_each_mod))]
-        loss_each_mod = [masked_l1_loss(preds, targets, mask) if not use_ce_loss else masked_ce_loss(preds, targets, mask)
-                         for preds, targets, mask, use_ce_loss in zip(preds_each_mod, targets_each_mod, loss_mask_each_mod, use_ce_loss_each_mod)]
+            # prediction loss
+            targets_each_mod = [obs[:, -cfg.actor.num_pred:] for obs in obs_each_mod[:-1]] + [pi_obs_noiseless[:, -cfg.actor.num_pred:]] + [pi_act[:, -cfg.actor.num_pred-1:-1]]
+            loss_mask_each_mod = [mask[:, -cfg.actor.num_pred:] for mask in mask_each_mod] + [action_mask[:, -cfg.actor.num_pred-1:-1]]
+            use_ce_loss_each_mod = [False for _ in range(len(targets_each_mod))]
+            loss_each_mod = [masked_l1_loss(preds, targets, mask) if not use_ce_loss else masked_ce_loss(preds, targets, mask)
+                             for preds, targets, mask, use_ce_loss in zip(preds_each_mod, targets_each_mod, loss_mask_each_mod, use_ce_loss_each_mod)]
 
-        if 'diffusion' in cfg.actor.type:
-            loss_each_mod[-1] = model.module.compute_diffusion_loss(preds_each_mod[-1], targets_each_mod[-1], loss_mask_each_mod[-1])
+            if 'diffusion' in cfg.actor.type:
+                loss_each_mod[-1] = model.module.compute_diffusion_loss(preds_each_mod[-1], targets_each_mod[-1], loss_mask_each_mod[-1])
 
-        prompt_loss = loss_each_mod[0]
-        img_loss = sum(loss_each_mod[1: 1 + len(all_ims)]) / len(all_ims)
-        state_loss = loss_each_mod[-2]
-        action_loss = loss_each_mod[-1]
+            prompt_loss = loss_each_mod[0]
+            img_loss = sum(loss_each_mod[1: 1 + len(all_ims)]) / len(all_ims)
+            state_loss = loss_each_mod[-2]
+            action_loss = loss_each_mod[-1]
 
-        if cfg.actor.pred_action_only:
-            prompt_loss *= 0
-            img_loss *= 0
-            state_loss *= 0
-        if cfg.actor.pred_state_only:
-            action_loss *= 0
-        loss = cfg.actor.prompt_loss_weight * prompt_loss + 0 * state_loss + cfg.actor.state_loss_weight * img_loss + action_loss
+            if cfg.actor.pred_action_only:
+                prompt_loss *= 0
+                img_loss *= 0
+                state_loss *= 0
+            if cfg.actor.pred_state_only:
+                action_loss *= 0
+            loss = cfg.actor.prompt_loss_weight * prompt_loss + 0 * state_loss + cfg.actor.state_loss_weight * img_loss + action_loss
 
         # Compute the gradients
         optimizer.zero_grad()
