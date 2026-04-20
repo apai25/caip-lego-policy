@@ -312,7 +312,7 @@ def main():
           f"use_proprio={server.use_proprio}, side={server.side}")
 
     # Warm up
-    _ = server.predict(np.zeros((server.num_cams, server.feat_dim), dtype=np.float32),
+    _ = server.predict(np.zeros((server.num_cams, 197, server.feat_dim), dtype=np.float32),
                        np.zeros(server.state_dim, dtype=np.float32))
     server.reset_history()
     print("[Server] Warm-up done.")
